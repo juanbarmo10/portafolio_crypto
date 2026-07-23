@@ -26,6 +26,9 @@ Incluye hasta ahora:
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
+- **Sincronización de cuenta Binance (solo lectura):** holdings reales + historial de
+  operaciones (precio, comisiones) para el nivel 4; nunca opera ni retira. Requiere una API key
+  **read-only** en `config/.env` (ver `.env.example`); si falta, se omite.
 - Dashboard Streamlit con 5 secciones (**Macro / Radar / Estructura de mercado / Tesis /
   Ejecución**): tablas interactivas (ordenar/reordenar/ocultar), colores y flechas ▲▼, logos,
   y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).
@@ -99,7 +102,7 @@ cryptodash/
 ├── core/            # config (settings.yaml + assets_meta.yaml + .env) y logging
 ├── config/          # settings.yaml · assets_meta.yaml · .env.example
 ├── db/              # schema.sql (formato largo) · loader idempotente · queries (lectura)
-├── ingest/          # base · fred · coingecko · defillama · derivatives · etf_flows
+├── ingest/          # base · fred · coingecko · defillama · derivatives · etf_flows · binance_account
 ├── transform/       # indicators.py · rally_quality.py (funciones puras + tablas)
 ├── alerts/          # reglas + Telegram (fase 3)
 ├── validation/      # backtest / métricas (fase 3)

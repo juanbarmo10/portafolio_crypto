@@ -13,8 +13,15 @@ import pandas as pd
 import pytest
 
 from core.config import load_settings
-from db.loader import init_db, upsert_observations
-from transform.indicators import dca_status, macro_table, portfolio_table, thesis_tvl_table
+from db.loader import init_db, upsert_observations, upsert_trades
+from transform.indicators import (
+    dca_status,
+    execution_summary,
+    holdings_table,
+    macro_table,
+    portfolio_table,
+    thesis_tvl_table,
+)
 
 
 @pytest.fixture()
@@ -168,6 +175,73 @@ def test_macro_change_none_without_previous(conn, settings) -> None:
     dff = table[table["series_id"] == "DFF"].iloc[0]
     assert dff["value"] == 3.63
     assert dff["change_pct"] is None  # single observation -> no change
+
+
+def test_holdings_table_values_and_weights(conn, settings) -> None:
+    # 0.02 BTC @ 65000 = 1300; 500 USDT (cash) = 500; total 1800.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("BTC:balance", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+                _obs("USDT:balance", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    assert table.attrs["total_value_usd"] == pytest.approx(1800.0)
+    assert table.attrs["cash_usd"] == pytest.approx(500.0)
+    btc = table[table["asset"] == "BTC"].iloc[0]
+    assert btc["value_usd"] == pytest.approx(1300.0)
+    assert btc["weight_pct"] == pytest.approx(1300.0 / 1800.0 * 100)
+
+
+def test_holdings_table_empty_without_sync(conn, settings) -> None:
+    assert holdings_table(conn, settings).empty
+
+
+def test_holdings_table_drops_dust(conn, settings) -> None:
+    # 0.00001 BTC @ 65000 = $0.65 < $1 dust threshold -> dropped.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("BTC:balance", "2026-07-23T00:00:00+00:00", 0.00001, source="binance"),
+                _obs("USDT:balance", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    assert "BTC" not in set(table["asset"])
+
+
+def test_execution_summary_from_trades(conn, settings) -> None:
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [
+                {"trade_id": "binance:1", "exchange": "binance", "symbol": "BTC/USDT",
+                 "side": "buy", "ts": "2026-07-20T00:00:00+00:00", "price": 65000.0,
+                 "amount": 0.01, "cost": 650.0, "fee": 0.65, "fee_currency": "USDT"},
+                {"trade_id": "binance:2", "exchange": "binance", "symbol": "ETH/USDT",
+                 "side": "buy", "ts": "2026-07-21T00:00:00+00:00", "price": 1900.0,
+                 "amount": 0.1, "cost": 190.0, "fee": 0.19, "fee_currency": "USDT"},
+            ]
+        ),
+    )
+    summary = execution_summary(conn, settings)
+    assert summary["has_trades"] is True
+    assert summary["n_trades"] == 2
+    assert summary["invested_usd"] == pytest.approx(840.0)
+    assert summary["net_invested_usd"] == pytest.approx(840.0)
+    assert summary["fees_usd"] == pytest.approx(0.84)  # stablecoin fees at $1
+    assert summary["fees_unconverted"] == 0
+
+
+def test_execution_summary_no_trades(conn, settings) -> None:
+    assert execution_summary(conn, settings) == {"has_trades": False}
 
 
 def test_dca_status_empty_plan(conn, settings) -> None:

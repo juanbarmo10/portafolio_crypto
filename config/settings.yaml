@@ -43,6 +43,14 @@ sources:
     assets: ["btc", "eth"]        # -> https://farside.co.uk/btc/ , /eth/
     request_timeout_s: 25
     user_agent: "cryptodash/0.1 (personal research dashboard; contact via repo)"
+  binance_account:
+    # READ-ONLY account sync (level 4: real holdings + trade history).
+    # Keys from BINANCE_API_KEY / BINANCE_API_SECRET (never here). If absent, skipped.
+    # NEVER enable trading/withdrawal on the key; the panel only reads (§2, §11).
+    quote: "USDT"                 # trade pairs scanned: "<SYMBOL>/USDT"
+    trades_since_days: 180        # how far back to pull executed trades
+    dust_threshold_usd: 1.0       # ignore balances worth less than this
+    request_timeout_ms: 20000
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20

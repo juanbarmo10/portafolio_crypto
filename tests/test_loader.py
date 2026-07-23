@@ -12,7 +12,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations
+from db.loader import (
+    OBSERVATION_COLUMNS,
+    TRADE_COLUMNS,
+    init_db,
+    upsert_observations,
+    upsert_trades,
+)
 
 
 @pytest.fixture()
@@ -113,3 +119,45 @@ def test_null_ts_release_persists_as_null(conn: sqlite3.Connection) -> None:
 def test_observation_columns_contract() -> None:
     """The public column contract is the one ingesters must honor."""
     assert OBSERVATION_COLUMNS == ["source", "series_id", "ts", "ts_release", "value"]
+
+
+def _trade_df(trade_id: str = "binance:1", cost: float = 65.0) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "trade_id": trade_id,
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "side": "buy",
+                "ts": "2026-07-21T00:00:00+00:00",
+                "price": 65000.0,
+                "amount": 0.001,
+                "cost": cost,
+                "fee": 0.065,
+                "fee_currency": "USDT",
+            }
+        ]
+    )
+
+
+def test_upsert_trades_inserts_and_is_idempotent(conn: sqlite3.Connection) -> None:
+    assert upsert_trades(conn, _trade_df()) == 1
+    upsert_trades(conn, _trade_df())  # same trade_id again
+    count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    assert count == 1  # no duplicate
+
+
+def test_upsert_trades_updates_on_conflict(conn: sqlite3.Connection) -> None:
+    upsert_trades(conn, _trade_df(cost=65.0))
+    upsert_trades(conn, _trade_df(cost=70.0))  # correction to same trade
+    cost = conn.execute("SELECT cost FROM trades WHERE trade_id='binance:1'").fetchone()[0]
+    assert cost == 70.0
+
+
+def test_upsert_trades_missing_columns_raises(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ValueError):
+        upsert_trades(conn, pd.DataFrame([{"trade_id": "x"}]))
+
+
+def test_trade_columns_contract() -> None:
+    assert TRADE_COLUMNS[0] == "trade_id" and "fee_currency" in TRADE_COLUMNS

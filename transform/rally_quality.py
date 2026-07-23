@@ -168,6 +168,7 @@ def market_structure_table(
                 "funding_latest": None if funding.dropna().empty else float(funding.dropna().iloc[-1]),
                 "price_chg": price_chg,
                 "oi_chg": oi_chg,
+                "oi_chg_30d": pct_change_over_days(oi, 30),
                 "rally_state": rally_state(price_chg, oi_chg),
             }
         )

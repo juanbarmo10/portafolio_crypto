@@ -316,3 +316,96 @@ def dca_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
 def _val(observation: tuple[str, float] | None) -> float | None:
     """Extract the value from a (ts, value) tuple, or None."""
     return None if observation is None else observation[1]
+
+
+# Stablecoins treated as $1 for valuation.
+STABLECOINS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
+
+
+def _usd_price(conn: sqlite3.Connection, asset: str, id_by_symbol: dict[str, str]) -> float | None:
+    """Latest USD price for an asset symbol: $1 for stablecoins, else CoinGecko."""
+    if asset in STABLECOINS:
+        return 1.0
+    coingecko_id = id_by_symbol.get(asset)
+    if not coingecko_id:
+        return None
+    return _val(latest_observation(conn, "coingecko", f"{coingecko_id}:price"))
+
+
+def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Real Binance holdings valued in USD (level 4). Empty if the account isn't synced.
+
+    Reads the latest ``<ASSET>:balance`` per asset (source 'binance') and values it with
+    the latest CoinGecko price ($1 for stablecoins). Positions worth less than the dust
+    threshold are dropped. The total portfolio value is exposed on ``df.attrs``.
+    """
+    balances = latest_by_source(conn, "binance")  # {"BTC:balance": amount, ...}
+    if not balances:
+        return pd.DataFrame()
+
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    dust = settings.source("binance_account").get("dust_threshold_usd", 1.0)
+
+    rows: list[dict[str, Any]] = []
+    for series_id, amount in balances.items():
+        asset = series_id.split(":")[0]
+        price = _usd_price(conn, asset, id_by_symbol)
+        value = None if price is None else amount * price
+        if value is not None and value < dust:
+            continue
+        rows.append(
+            {
+                "asset": asset,
+                "amount": amount,
+                "price_usd": price,
+                "value_usd": value,
+                "is_cash": asset in STABLECOINS,
+            }
+        )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    total = df["value_usd"].sum(skipna=True)
+    df["weight_pct"] = df["value_usd"] / total * 100 if total else None
+    df = df.sort_values("value_usd", ascending=False, na_position="last").reset_index(drop=True)
+    df.attrs["total_value_usd"] = float(total) if total else 0.0
+    df.attrs["cash_usd"] = float(df.loc[df["is_cash"], "value_usd"].sum(skipna=True))
+    return df
+
+
+def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Aggregate real executed trades (level 4): invested, proceeds, fees, count.
+
+    Fees are converted to USD best-effort: stablecoin fees at $1, other fee assets via
+    the latest CoinGecko price; any fee that cannot be priced is counted as unconverted.
+    """
+    trades = conn.execute(
+        "SELECT side, cost, fee, fee_currency FROM trades"
+    ).fetchall()
+    if not trades:
+        return {"has_trades": False}
+
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    invested = proceeds = fees_usd = 0.0
+    fees_unconverted = 0
+    for side, cost, fee, fee_currency in trades:
+        if side == "buy" and cost is not None:
+            invested += cost
+        elif side == "sell" and cost is not None:
+            proceeds += cost
+        if fee:
+            price = _usd_price(conn, fee_currency, id_by_symbol) if fee_currency else None
+            if price is not None:
+                fees_usd += fee * price
+            else:
+                fees_unconverted += 1
+
+    return {
+        "has_trades": True,
+        "n_trades": len(trades),
+        "invested_usd": invested,
+        "proceeds_usd": proceeds,
+        "net_invested_usd": invested - proceeds,
+        "fees_usd": fees_usd,
+        "fees_unconverted": fees_unconverted,
+    }

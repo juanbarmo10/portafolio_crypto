@@ -28,6 +28,8 @@ from core.config import load_settings
 from db.loader import init_db
 from transform.indicators import (
     dca_status,
+    execution_summary,
+    holdings_table,
     macro_table,
     portfolio_table,
     thesis_tvl_table,
@@ -439,6 +441,7 @@ def _section_market_structure(conn, settings) -> None:
                 "Funding z": _fmt_funding_z(r["funding_z"]),
                 "Precio 7d": _fmt_change(r["price_chg"]),
                 "OI 7d": _fmt_change(r["oi_chg"]),
+                "OI 30d": _fmt_change(r["oi_chg_30d"]),
             }
             for r in ms.to_dict("records")
         ]
@@ -447,7 +450,7 @@ def _section_market_structure(conn, settings) -> None:
             show.style
             .map(_color_rally, subset=["Estado"])
             .map(_color_funding_z, subset=["Funding z"])
-            .map(_color_by_sign, subset=["Precio 7d", "OI 7d"])
+            .map(_color_by_sign, subset=["Precio 7d", "OI 7d", "OI 30d"])
         )
         st.dataframe(
             styler,
@@ -464,6 +467,9 @@ def _section_market_structure(conn, settings) -> None:
                     "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
                 ),
                 "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
+                "OI 30d": st.column_config.TextColumn(
+                    help="Variación del interés abierto (USD) a 30 días (~límite del historial de OI)."
+                ),
             },
         )
         st.caption(
@@ -552,14 +558,74 @@ def _section_thesis(conn, settings) -> None:
     )
 
 
+def _fmt_amount(a: float | None) -> str:
+    """Format a token amount with up to 8 decimals, trailing zeros trimmed."""
+    if a is None or pd.isna(a):
+        return "—"
+    s = f"{a:,.8f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
 def _section_execution(conn, settings) -> None:
-    """Level 4 — DCA plan state."""
-    st.header("5 · Ejecución — plan DCA")
+    """Level 4 — real account (read-only) + DCA plan."""
+    st.header("5 · Ejecución — cartera real y plan DCA")
+
+    # --- Real account (read-only Binance sync) -------------------------------
+    st.subheader("Cartera real (Binance, solo lectura)")
+    holdings = holdings_table(conn, settings)
+    if holdings.empty:
+        st.info(
+            "Cuenta no conectada. Crea una API key **de solo lectura** en Binance "
+            "(sin trading ni retiros, restringida por IP), añádela como "
+            "`BINANCE_API_KEY` / `BINANCE_API_SECRET` en `config/.env` y ejecuta "
+            "`python run_ingest.py`. Ver `config/.env.example` para los permisos exactos."
+        )
+    else:
+        exec_sum = execution_summary(conn, settings)
+        total = holdings.attrs.get("total_value_usd", 0.0)
+        cash = holdings.attrs.get("cash_usd", 0.0)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Valor cartera", _fmt_usd(total))
+        c2.metric("Efectivo (stables)", _fmt_usd(cash))
+        if exec_sum.get("has_trades"):
+            c3.metric("Invertido neto", _fmt_usd(exec_sum["net_invested_usd"]))
+            c4.metric(
+                "Comisiones reales",
+                _fmt_usd(exec_sum["fees_usd"]),
+                help=(
+                    "Comisiones de operaciones convertidas a USD (stablecoins a $1, resto vía "
+                    "precio). "
+                    + (
+                        f"{exec_sum['fees_unconverted']} comisión(es) sin convertir."
+                        if exec_sum.get("fees_unconverted")
+                        else "Todas convertidas."
+                    )
+                ),
+            )
+        show = pd.DataFrame(
+            {
+                "Activo": holdings["asset"],
+                "Cantidad": holdings["amount"].map(_fmt_amount),
+                "Precio": holdings["price_usd"].map(_fmt_usd),
+                "Valor": holdings["value_usd"].map(_fmt_usd),
+                "Peso": holdings["weight_pct"].map(
+                    lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
+                ),
+            }
+        )
+        st.dataframe(show, hide_index=True, width="stretch")
+        st.caption(
+            "Solo lectura: el panel nunca opera ni retira (§2, §11). Comisiones materiales con "
+            "tickets de ~$17 — el registro real permite comparar contra el baseline de mantener."
+        )
+
+    # --- DCA plan (manual) ---------------------------------------------------
+    st.subheader("Plan DCA")
     status = dca_status(conn, settings)
     c1, c2, c3 = st.columns(3)
-    c1.metric("Desplegado", _fmt_usd(status["deployed_usd"]))
+    c1.metric("Desplegado (plan)", _fmt_usd(status["deployed_usd"]))
     c2.metric("Planificado", _fmt_usd(status["planned_usd"]))
-    c3.metric("Comisiones acum.", _fmt_usd(status["fees_usd"]))
+    c3.metric("Comisiones (plan)", _fmt_usd(status["fees_usd"]))
 
     nxt = status["next_tranche"]
     if nxt is None:
@@ -572,7 +638,6 @@ def _section_execution(conn, settings) -> None:
             f"**Próximo tramo:** {nxt['asset']} ({nxt['tier']}) · "
             f"{_fmt_usd(nxt['amount_usd'])} · objetivo {nxt['target_date']}"
         )
-    st.caption("Comisiones materiales con tickets de ~$17 — verificarlas antes de ejecutar (§2).")
 
 
 def main() -> None:

@@ -47,6 +47,24 @@ CREATE TABLE IF NOT EXISTS dca_plan (
     fees_usd    REAL                -- material with ~$17 tickets
 );
 
+-- Real executed trades pulled READ-ONLY from the exchange account (Phase level 4).
+-- Complements dca_plan (the plan) with actual fills: price, fees, timing. Idempotent
+-- by exchange trade_id. Holdings/balances are stored in observations, not here.
+CREATE TABLE IF NOT EXISTS trades (
+    trade_id     TEXT PRIMARY KEY,   -- exchange trade id (idempotent)
+    exchange     TEXT NOT NULL,      -- 'binance'
+    symbol       TEXT NOT NULL,      -- 'BTC/USDT'
+    side         TEXT NOT NULL,      -- 'buy' | 'sell'
+    ts           TEXT NOT NULL,      -- ISO8601 UTC execution time
+    price        REAL,               -- execution price (quote per base)
+    amount       REAL,               -- base amount filled
+    cost         REAL,               -- quote cost (= price * amount)
+    fee          REAL,               -- fee amount
+    fee_currency TEXT,               -- fee asset (e.g. 'USDT' | 'BNB')
+    ingested_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON trades(symbol, ts DESC);
+
 -- Exit rules written BEFORE buying (section 2: discipline by design).
 CREATE TABLE IF NOT EXISTS exit_rules (
     rule_id     TEXT PRIMARY KEY,

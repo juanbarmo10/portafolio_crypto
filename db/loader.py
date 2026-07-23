@@ -120,3 +120,54 @@ def upsert_observations(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
 
     log.info("Upserted %d observations.", len(records))
     return len(records)
+
+
+TRADE_COLUMNS = [
+    "trade_id", "exchange", "symbol", "side", "ts",
+    "price", "amount", "cost", "fee", "fee_currency",
+]
+
+_UPSERT_TRADE_SQL = """
+INSERT INTO trades
+    (trade_id, exchange, symbol, side, ts, price, amount, cost, fee, fee_currency, ingested_at)
+VALUES
+    (:trade_id, :exchange, :symbol, :side, :ts, :price, :amount, :cost, :fee, :fee_currency, :ingested_at)
+ON CONFLICT(trade_id) DO UPDATE SET
+    price = excluded.price, amount = excluded.amount, cost = excluded.cost,
+    fee = excluded.fee, fee_currency = excluded.fee_currency, ingested_at = excluded.ingested_at
+"""
+
+
+def upsert_trades(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """Idempotently upsert executed trades (keyed by trade_id).
+
+    Args:
+        conn: Open connection with the schema applied.
+        df: DataFrame with at least ``TRADE_COLUMNS``.
+
+    Returns:
+        Number of trade rows submitted. Re-running does not duplicate (ON CONFLICT).
+
+    Raises:
+        ValueError: If required columns are missing (fail loudly, section 10).
+    """
+    missing = [c for c in TRADE_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Trades DataFrame missing required columns: {missing}.")
+    if df.empty:
+        log.info("No trades to upsert.")
+        return 0
+
+    ingested_at = _utc_now_iso()
+    records = []
+    for row in df[TRADE_COLUMNS].itertuples(index=False):
+        record = {c: getattr(row, c) for c in TRADE_COLUMNS}
+        for numeric in ("price", "amount", "cost", "fee"):
+            record[numeric] = None if pd.isna(record[numeric]) else float(record[numeric])
+        record["ingested_at"] = ingested_at
+        records.append(record)
+
+    with conn:
+        conn.executemany(_UPSERT_TRADE_SQL, records)
+    log.info("Upserted %d trades.", len(records))
+    return len(records)

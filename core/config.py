@@ -106,7 +106,13 @@ def load_settings() -> Settings:
 
     secrets = {
         key: os.environ[key]
-        for key in ("FRED_API_KEY", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")
+        for key in (
+            "FRED_API_KEY",
+            "TELEGRAM_TOKEN",
+            "TELEGRAM_CHAT_ID",
+            "BINANCE_API_KEY",     # READ-ONLY key (no trading/withdrawal), see .env.example
+            "BINANCE_API_SECRET",
+        )
         if os.environ.get(key)
     }
 

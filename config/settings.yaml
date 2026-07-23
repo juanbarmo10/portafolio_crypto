@@ -31,15 +31,39 @@ sources:
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20
-    # Drop reference dates before this when reducing all-releases vintages.
+    # Drop reference dates before this when fetching initial releases.
     observation_start: "2015-01-01"
+    # Each series: code (FRED id), label (display name), description (hover tooltip
+    # shown in the dashboard). Labels/descriptions live here, never hardcoded (§10).
     series:
-      cpi: "CPIAUCSL"      # CPI, all urban consumers
-      core_pce: "PCEPILFE" # Core PCE price index
-      nfp: "PAYEMS"        # Nonfarm payrolls
-      fed_funds: "DFF"     # Effective federal funds rate
-      dxy: "DTWEXBGS"      # Broad USD index
-      yield_curve: "T10Y2Y" # 10Y-2Y spread
+      cpi:
+        code: "CPIAUCSL"
+        label: "CPI"
+        description: "Índice de Precios al Consumidor (urbano). Inflación general; al alza cuando los precios suben."
+      core_pce:
+        code: "PCEPILFE"
+        label: "Core PCE"
+        description: "PCE subyacente (sin alimentos ni energía). Métrica de inflación preferida por la Fed."
+      nfp:
+        code: "PAYEMS"
+        label: "NFP"
+        description: "Nóminas no agrícolas (miles de empleos). Empleo total; mide la fortaleza del mercado laboral de EE. UU."
+        # PAYEMS está en miles de personas: un +150K típico es ~0.1% del nivel, así
+        # que el % es poco informativo. Mostramos el cambio absoluto (empleos añadidos).
+        change_display: absolute
+        change_unit: "K"   # el valor ya viene en miles, el delta crudo son miles de empleos
+      fed_funds:
+        code: "DFF"
+        label: "Fed Funds"
+        description: "Tasa efectiva de fondos federales. Tipo de referencia de la política monetaria de la Fed."
+      dxy:
+        code: "DTWEXBGS"
+        label: "DXY"
+        description: "Índice amplio del dólar. Dólar fuerte = viento en contra para activos de riesgo y cripto."
+      yield_curve:
+        code: "T10Y2Y"
+        label: "Curva 10A-2A"
+        description: "Spread de tipos 10 años menos 2 años. Negativo (curva invertida) = señal históricamente recesiva."
 
 # --- Tracked asset universe (CLAUDE.md section 5) ----------------------------
 # tier: nucleo | satelite | riesgo_medio | riesgo_alto | observacion

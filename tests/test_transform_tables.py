@@ -14,7 +14,7 @@ import pytest
 
 from core.config import load_settings
 from db.loader import init_db, upsert_observations
-from transform.indicators import dca_status, portfolio_table, thesis_tvl_table
+from transform.indicators import dca_status, macro_table, portfolio_table, thesis_tvl_table
 
 
 @pytest.fixture()
@@ -81,6 +81,50 @@ def test_thesis_tvl_table_7d_change(conn, settings) -> None:
     aave = table[table["symbol"] == "AAVE"].iloc[0]
     assert aave["tvl"] == 110.0
     assert aave["tvl_chg_7d"] == pytest.approx(10.0)
+
+
+def test_macro_table_change_and_labels(conn, settings) -> None:
+    # CPI: previous 100.0 then latest 101.0 -> +1.0% MoM change.
+    df = pd.DataFrame(
+        [
+            _obs("CPIAUCSL", "2026-05-01T00:00:00+00:00", 100.0, source="fred"),
+            _obs("CPIAUCSL", "2026-06-01T00:00:00+00:00", 101.0, source="fred"),
+        ]
+    )
+    upsert_observations(conn, df)
+    table = macro_table(conn, settings)
+    cpi = table[table["series_id"] == "CPIAUCSL"].iloc[0]
+    assert cpi["label"] == "CPI"  # display label from config, not the raw key
+    assert cpi["description"]  # non-empty tooltip text
+    assert cpi["value"] == 101.0
+    assert cpi["change_pct"] == pytest.approx(1.0)
+
+
+def test_macro_nfp_absolute_change(conn, settings) -> None:
+    # NFP is configured as absolute display: report jobs added (in thousands).
+    df = pd.DataFrame(
+        [
+            _obs("PAYEMS", "2026-05-01T00:00:00+00:00", 158834.0, source="fred"),
+            _obs("PAYEMS", "2026-06-01T00:00:00+00:00", 158984.0, source="fred"),
+        ]
+    )
+    upsert_observations(conn, df)
+    table = macro_table(conn, settings)
+    nfp = table[table["series_id"] == "PAYEMS"].iloc[0]
+    assert nfp["change_display"] == "absolute"
+    assert nfp["change_unit"] == "K"
+    assert nfp["change_abs"] == pytest.approx(150.0)  # +150K jobs
+
+
+def test_macro_change_none_without_previous(conn, settings) -> None:
+    upsert_observations(
+        conn,
+        pd.DataFrame([_obs("DFF", "2026-07-21T00:00:00+00:00", 3.63, source="fred")]),
+    )
+    table = macro_table(conn, settings)
+    dff = table[table["series_id"] == "DFF"].iloc[0]
+    assert dff["value"] == 3.63
+    assert dff["change_pct"] is None  # single observation -> no change
 
 
 def test_dca_status_empty_plan(conn, settings) -> None:

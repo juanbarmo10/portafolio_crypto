@@ -106,26 +106,58 @@ def dilution_ratio(circulating: float | None, max_supply: float | None) -> float
 
 
 def macro_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
-    """Latest value and first-release date per configured macro series (level 1)."""
-    series_map: dict[str, str] = settings.source("fred").get("series", {})
+    """Latest value, period change and first-release date per macro series (level 1).
+
+    Columns: key, label, description, series_id, ts, ts_release, value, change_pct.
+    ``change_pct`` is the percent change of the latest value vs. the previous
+    observation (e.g. month-over-month for CPI). It uses ``abs(prev)`` in the
+    denominator so the sign reflects the direction of the move even for series that
+    can go negative (e.g. the yield-curve spread). None when there is no prior point
+    or the previous value is zero.
+    """
+    series_cfg: dict[str, Any] = settings.source("fred").get("series", {})
     rows: list[dict[str, Any]] = []
-    for name, code in series_map.items():
-        latest = latest_observation(conn, "fred", code)
-        release = None
-        if latest is not None:
-            r = conn.execute(
-                "SELECT ts_release FROM observations "
-                "WHERE source='fred' AND series_id=? ORDER BY ts DESC LIMIT 1",
-                (code,),
-            ).fetchone()
-            release = r[0] if r else None
+    for key, entry in series_cfg.items():
+        code = entry["code"] if isinstance(entry, dict) else entry
+        label = entry.get("label", key.upper()) if isinstance(entry, dict) else key.upper()
+        description = entry.get("description", "") if isinstance(entry, dict) else ""
+
+        # Last two observations by reference date: [latest, previous].
+        last_two = conn.execute(
+            "SELECT ts, value, ts_release FROM observations "
+            "WHERE source='fred' AND series_id=? AND value IS NOT NULL "
+            "ORDER BY ts DESC LIMIT 2",
+            (code,),
+        ).fetchall()
+
+        latest = last_two[0] if last_two else None
+        prev_value = last_two[1][1] if len(last_two) >= 2 else None
+        value = latest[1] if latest else None
+        change_abs = None
+        change_pct = None
+        if value is not None and prev_value is not None:
+            change_abs = value - prev_value
+            if prev_value != 0:
+                change_pct = (value - prev_value) / abs(prev_value) * 100.0
+
+        # How the change is displayed: 'percent' (default) or 'absolute' (with a
+        # unit suffix), configured per series. NFP uses absolute (jobs added).
+        change_display = entry.get("change_display", "percent") if isinstance(entry, dict) else "percent"
+        change_unit = entry.get("change_unit", "") if isinstance(entry, dict) else ""
+
         rows.append(
             {
-                "name": name,
+                "key": key,
+                "label": label,
+                "description": description,
                 "series_id": code,
-                "ts": None if latest is None else latest[0],
-                "value": None if latest is None else latest[1],
-                "ts_release": release,
+                "ts": latest[0] if latest else None,
+                "ts_release": latest[2] if latest else None,
+                "value": value,
+                "change_pct": change_pct,
+                "change_abs": change_abs,
+                "change_display": change_display,
+                "change_unit": change_unit,
             }
         )
     return pd.DataFrame(rows)

@@ -177,7 +177,10 @@ class FredIngester(Ingester):
         """Return all configured macro series as a long observations DataFrame."""
         realtime_end = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
         frames: list[pd.DataFrame] = []
-        for name, code in self._series.items():
+        for name, entry in self._series.items():
+            # Series config is {key: {code, label, description}}; tolerate a plain
+            # "key: code" string for backward compatibility.
+            code = entry["code"] if isinstance(entry, dict) else entry
             observations = self._fetch_observations(code, self._observation_start, realtime_end)
             reduced = parse_initial_releases(observations, code)
             log.info("FRED: %s (%s) -> %d points.", name, code, len(reduced))

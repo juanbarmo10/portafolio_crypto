@@ -19,6 +19,8 @@ Writes: nothing.
 
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 import streamlit as st
 
@@ -59,34 +61,107 @@ def _fmt_big_usd(x: float | None) -> str:
     return f"${x:,.2f}"
 
 
+def _fmt_date(iso: str | None) -> str:
+    """Return just the ISO date (drop the time component), or an em dash."""
+    return "—" if not iso or pd.isna(iso) else str(iso)[:10]
+
+
+def _fmt_num(x: float | None) -> str:
+    """Format a number with thousands separators, trimming trailing zeros."""
+    if x is None or pd.isna(x):
+        return "—"
+    s = f"{x:,.2f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def _arrow_color(delta: float) -> tuple[str, str]:
+    """Return (arrow, color) for a signed change: green up, red down, gray flat."""
+    if delta > 0:
+        return "▲", "#16a34a"  # green
+    if delta < 0:
+        return "▼", "#dc2626"  # red
+    return "▬", "#9ca3af"  # neutral gray
+
+
+def _delta_cell_html(record: dict) -> str:
+    """Render the change cell: absolute (with unit) or percent, per series config."""
+    if record.get("change_display") == "absolute":
+        delta = record.get("change_abs")
+        if delta is None or pd.isna(delta):
+            return "<span style='opacity:0.45'>—</span>"
+        arrow, color = _arrow_color(delta)
+        unit = record.get("change_unit", "")
+        return f"<span style='color:{color};font-weight:600'>{arrow}&nbsp;{delta:+,.0f}{unit}</span>"
+
+    pct = record.get("change_pct")
+    if pct is None or pd.isna(pct):
+        return "<span style='opacity:0.45'>—</span>"
+    arrow, color = _arrow_color(pct)
+    return f"<span style='color:{color};font-weight:600'>{arrow}&nbsp;{pct:+.2f}%</span>"
+
+
 # --- Sections ----------------------------------------------------------------
+
+
+def _macro_html(records: list[dict]) -> str:
+    """Build the macro table as HTML: hover tooltips, colored deltas, date-only.
+
+    An HTML table (rather than st.dataframe) is used so each indicator name can
+    carry a per-row ``title`` tooltip and the delta cell can be individually
+    colored — neither of which st.dataframe supports.
+    """
+    th = "padding:6px 16px 6px 0;text-align:{a};border-bottom:2px solid rgba(128,128,128,0.35);font-weight:600;"
+    td = "padding:6px 16px 6px 0;text-align:{a};border-bottom:1px solid rgba(128,128,128,0.18);"
+    num = "font-variant-numeric:tabular-nums;white-space:nowrap;"
+
+    header = (
+        "<tr>"
+        f"<th style=\"{th.format(a='left')}\">Indicador</th>"
+        f"<th style=\"{th.format(a='right')}\">Último</th>"
+        f"<th style=\"{th.format(a='right')}\">Δ vs. previo</th>"
+        f"<th style=\"{th.format(a='right')}\">Fecha ref.</th>"
+        f"<th style=\"{th.format(a='right')}\">Publicado</th>"
+        "</tr>"
+    )
+    body = ""
+    for r in records:
+        if r["value"] is None or pd.isna(r["value"]):
+            continue
+        desc = html.escape(str(r.get("description", "")), quote=True)
+        label = html.escape(str(r["label"]))
+        name = (
+            f'<span title="{desc}" '
+            'style="border-bottom:1px dotted currentColor;cursor:help">'
+            f"{label}</span>"
+        )
+        body += (
+            "<tr>"
+            f"<td style=\"{td.format(a='left')}\">{name}</td>"
+            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_num(r['value'])}</td>"
+            f"<td style=\"{td.format(a='right')}{num}\">{_delta_cell_html(r)}</td>"
+            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_date(r['ts'])}</td>"
+            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_date(r['ts_release'])}</td>"
+            "</tr>"
+        )
+    return f'<table style="border-collapse:collapse;width:100%">{header}{body}</table>'
 
 
 def _section_macro(conn, settings) -> None:
     """Level 1 — macro context. Rendered first and prominently (non-negotiable)."""
     st.header("1 · Macro — ¿hay apetito por riesgo?")
     df = macro_table(conn, settings)
-    if df["value"].notna().sum() == 0:
+    if df.empty or df["value"].notna().sum() == 0:
         st.info(
             "Sin datos macro. Configura `FRED_API_KEY` en `config/.env` y ejecuta "
             "`python run_ingest.py` para poblar CPI, PCE, NFP, Fed Funds, DXY y la curva."
         )
         return
-    show = df.copy()
-    show["value"] = show["value"].map(lambda v: "—" if pd.isna(v) else f"{v:,.2f}")
-    show = show.rename(
-        columns={
-            "name": "Serie",
-            "series_id": "FRED",
-            "value": "Último",
-            "ts": "Fecha ref.",
-            "ts_release": "Publicado",
-        }
-    )
-    st.dataframe(show, hide_index=True, use_container_width=True)
+    st.markdown(_macro_html(df.to_dict("records")), unsafe_allow_html=True)
     st.caption(
-        "`Publicado` es la fecha de primera publicación (ts_release). Los backtests "
-        "filtran por esta fecha para evitar look-ahead bias (§9)."
+        "Δ = variación frente a la observación anterior (p. ej. mensual en CPI); NFP se "
+        "muestra como empleos añadidos en miles (+K), no en %. `Publicado` = fecha de primera "
+        "publicación; los backtests filtran por ella para evitar look-ahead (§9). Pasa el cursor "
+        "sobre el nombre del indicador para ver su definición."
     )
 
 

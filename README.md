@@ -11,7 +11,7 @@ y ecuaciones** (formulación, efecto en cripto, uso y qué validar) están en [R
 
 ## Estado
 
-**Fases 0, 1 y 2 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.
+**Fases 0-3 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -34,9 +34,14 @@ Incluye hasta ahora:
 - Dashboard Streamlit con 5 secciones (**Macro / Radar / Estructura de mercado / Tesis /
   Ejecución**): tablas interactivas (ordenar/reordenar/ocultar), colores y flechas ▲▼, logos,
   y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).
+- **Alertas** (`run_alerts.py`): motor declarativo (`alerts.rules` en config) — racha de salidas
+  ETF, funding z extremo, caída de TVL, unlock próximo, recordatorio de aporte mensual — con
+  entrega por Telegram (dry-run si no hay bot) y dedup por `alerts_log`.
+- **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
+  significancia por bootstrap; z-scores point-in-time (sin look-ahead, §9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 85) de esquema, idempotencia, config, indicadores, rally-quality, parsers de
-  ingesta (incl. fixture Farside congelado), helpers del dashboard y humo de render (AppTest).
+- Tests (`pytest`, 113) de esquema, idempotencia, config, indicadores, rally-quality, alertas,
+  validación, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
 
 ## Requisitos
 
@@ -82,6 +87,13 @@ python run_ingest.py
 ./run_dashboard.sh                    # http://localhost:8501
 # o directamente:
 streamlit run app/dashboard.py
+
+# Alertas (Fase 3): evalúa reglas y envía a Telegram (dry-run si no hay bot).
+python run_alerts.py --dry-run        # evaluar y loguear, sin enviar
+python run_alerts.py                  # enviar nuevas alertas (necesita TELEGRAM_*)
+
+# Validación de señales (Fase 3): informe honesto de backtest.
+python run_validation.py --z 1.5 --horizon 7
 ```
 
 > Para la ingesta de **derivados y flujos ETF** (Fase 2) instala el extra
@@ -90,10 +102,36 @@ streamlit run app/dashboard.py
 `run_ingest.py` es idempotente: ejecutarlo dos veces no duplica filas. El panel es
 *pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, §2).
 
+## Validación de señales (resultado preliminar)
+
+> Documentar los resultados de validación **incluidos los que no funcionan** es parte del
+> proyecto (§8). Esto es un resultado *preliminar y honesto*, no una recomendación.
+
+**Señal probada:** funding z-score alto (≥1.0, ventana 90 d, *point-in-time*) → retorno a 7 días
+del cierre del perp, contra baseline de todas las fechas, con p-valor por bootstrap (permutación).
+**Hipótesis:** largos hacinados (funding alto) → corrección → *edge* negativo.
+
+| Activo | n | señal % | base % | edge (pp) | p |
+|---|---:|---:|---:|---:|---:|
+| ETH | 12 | +1.91 | +5.59 | **−3.68** | 0.019 |
+| LINK | 19 | +1.91 | +4.70 | **−2.79** | 0.023 |
+| SUI | 26 | +0.12 | +2.86 | **−2.74** | 0.038 |
+| XLM | 22 | −1.72 | +1.76 | −3.49 | 0.185 |
+| BTC | 29 | +2.22 | +2.63 | −0.41 | 0.572 |
+| SOL | 12 | +3.52 | +2.59 | +0.93 | 0.748 |
+| UNI | 30 | +7.97 | +7.54 | +0.43 | 0.803 |
+
+**Conclusión honesta:** el *edge* es **mayormente negativo** (coherente con la teoría: funding
+alto precede a retornos más débiles), y tres activos cruzan p<0.05. **Pero no es concluyente:**
+con ~30 días de historial las muestras son diminutas, los p-valores poco potentes, hay *multiple
+testing* (11 activos → se esperan falsos positivos), y SOL/UNI van en contra. **No accionable aún.**
+Reejecutar `python run_validation.py` al acumular meses de datos. *(Cifras del 2026-07-23; cambiarán
+al crecer el historial.)*
+
 ## Tests
 
 ```bash
-pytest            # suite completa
+pytest            # suite completa (113)
 ruff check .      # linting
 ```
 
@@ -106,10 +144,10 @@ cryptodash/
 ├── db/              # schema.sql (formato largo) · loader idempotente · queries (lectura)
 ├── ingest/          # base · fred · coingecko · defillama · derivatives · etf_flows · binance_account
 ├── transform/       # indicators.py · rally_quality.py (funciones puras + tablas)
-├── alerts/          # reglas + Telegram (fase 3)
-├── validation/      # backtest / métricas (fase 3)
+├── alerts/          # rules.py (motor declarativo) · telegram.py
+├── validation/      # metrics.py (forward return, bootstrap) · backtest.py
 ├── app/             # dashboard.py (Streamlit, 5 secciones interactivas)
 ├── tests/           # pytest + fixtures/ (fixture HTML congelado de Farside)
-├── run_ingest.py    # punto de entrada del pipeline
+├── run_ingest.py    # pipeline de ingesta · run_alerts.py · run_validation.py
 └── run_dashboard.sh # lanzador del dashboard (un comando)
 ```

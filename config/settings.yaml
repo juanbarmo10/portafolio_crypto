@@ -224,6 +224,18 @@ indicators:
 dca:
   monthly_contribution_min_usd: 200
 
+# --- Alerts (CLAUDE.md section 8, phase 3) -----------------------------------
+# Declarative rules evaluated against the DB after ingest; only actionable, pre-written
+# conditions fire (§2). Deduped per condition per day via alerts_log. Delivery via
+# Telegram (TELEGRAM_TOKEN/CHAT_ID); dry-run/logged if unconfigured.
+alerts:
+  rules:
+    - {id: etf_outflow_streak, kind: etf_outflow_streak, min_days: 3}
+    - {id: funding_crowded,    kind: funding_crowded,    z_threshold: 2.0}
+    - {id: tvl_drop,           kind: tvl_drop,           pct: 20}
+    - {id: unlock_soon,        kind: unlock_soon,        within_days: 7}
+    - {id: monthly_dca_reminder, kind: monthly_dca_reminder, day_of_month: 1}
+
 # --- Thesis categories (CLAUDE.md section 5) ---------------------------------
 # Brief explanation per thesis category, shown in the Tesis table. Diversification
 # is by category / failure mode, not by ticker — this makes the grouping legible.

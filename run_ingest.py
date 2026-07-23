@@ -1,0 +1,112 @@
+"""Pipeline entry point (CLAUDE.md section 8, Phase 0 acceptance criterion).
+
+Usage:
+    python run_ingest.py --dry-run   # create/verify the DB and config, ingest nothing
+    python run_ingest.py             # run registered ingesters (added in Phase 1+)
+
+Inputs (read):
+    - config/settings.yaml (+ config/.env) via core.config.
+    - db/schema.sql via db.loader.
+
+Outputs (write):
+    - The SQLite database (schema ensured; observations upserted in non-dry-run).
+    - Structured logs to stderr.
+
+Phase 0 acceptance criterion:
+    ``python run_ingest.py --dry-run`` creates the DB and does not fail.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from core.config import Settings, load_settings
+from core.logging_setup import configure_logging, get_logger
+from db.loader import init_db, upsert_observations
+from ingest.base import Ingester
+from ingest.coingecko import CoinGeckoIngester
+from ingest.defillama import DefiLlamaIngester
+from ingest.fred import FredIngester
+
+log = get_logger(__name__)
+
+
+def build_ingesters(settings: Settings) -> list[Ingester]:
+    """Instantiate the registered ingesters, skipping any that cannot run.
+
+    FRED needs FRED_API_KEY; if it is absent that ingester is skipped with a
+    warning rather than aborting the whole run (CoinGecko and DefiLlama need no key).
+    """
+    ingesters: list[Ingester] = [
+        CoinGeckoIngester(settings),
+        DefiLlamaIngester(settings),
+    ]
+    try:
+        ingesters.append(FredIngester(settings))
+    except RuntimeError as exc:
+        log.warning("Skipping FRED ingester: %s", exc)
+    return ingesters
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments. Returns the parsed namespace."""
+    parser = argparse.ArgumentParser(description="cryptodash ingestion pipeline")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Create/verify the DB and config, but run no ingesters.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the pipeline.
+
+    In dry-run mode this validates configuration and ensures the schema exists,
+    which is all Phase 0 requires. Concrete ingesters are registered here in
+    later phases.
+
+    Returns:
+        Process exit code (0 on success).
+    """
+    args = parse_args(argv)
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+
+    log.info(
+        "Starting run_ingest (dry_run=%s, db=%s, assets=%d).",
+        args.dry_run,
+        settings.db_path,
+        len(settings.assets),
+    )
+
+    # Ensure the schema exists regardless of mode; this is the Phase 0 deliverable.
+    conn = init_db(settings.db_path)
+    try:
+        if args.dry_run:
+            log.info("Dry run: schema ensured, no ingesters executed. Done.")
+            return 0
+
+        total = 0
+        failures = 0
+        for ingester in build_ingesters(settings):
+            name = type(ingester).__name__
+            try:
+                df = ingester.fetch()
+                total += upsert_observations(conn, df)
+            except Exception:  # noqa: BLE001 — log, keep going, fail loudly at the end
+                failures += 1
+                log.exception("Ingester %s failed.", name)
+
+        log.info("Ingest complete: %d observations upserted, %d ingester(s) failed.",
+                 total, failures)
+        # Non-zero exit if any ingester failed, so cron/CI surfaces it (section 9).
+        return 1 if failures else 0
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

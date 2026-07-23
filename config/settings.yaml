@@ -1,0 +1,149 @@
+# cryptodash configuration — externalized settings (CLAUDE.md section 10).
+# Nothing here is hardcoded in Python: assets, IDs, thresholds and windows all live here.
+#
+# ID VERIFICATION STATUS (CLAUDE.md section 12):
+#   All coingecko_id / defillama slugs below were verified against the live APIs
+#   on 2026-07-22 (prices resolve on /simple/price; TVL resolves on /tvl/<slug>
+#   and /v2/chains) and are marked `verified: true`. Re-verify if a slug is added
+#   or a source renames it (section 9: "documentar de qué fuente sale cada número").
+
+database:
+  # Path is relative to the repo root; resolved by core.config. Never hardcoded in code.
+  path: "cryptodash.db"
+
+logging:
+  # Overridable at runtime via LOG_LEVEL env var (see core.logging_setup).
+  level: "INFO"
+
+# --- Data source parameters (all free; CLAUDE.md section 4) -------------------
+sources:
+  coingecko:
+    base_url: "https://api.coingecko.com/api/v3"
+    # Free tier ~30 req/min. Use batch endpoints; back off on 429.
+    rate_limit_per_min: 30
+    request_timeout_s: 20
+    vs_currency: "usd"
+  defillama:
+    base_url: "https://api.llama.fi"
+    request_timeout_s: 20
+    # Keep this many days of historical TVL per protocol/chain (enough for 7/30/90d).
+    history_days: 400
+  fred:
+    # API key comes from FRED_API_KEY env var, never stored here.
+    request_timeout_s: 20
+    # Drop reference dates before this when reducing all-releases vintages.
+    observation_start: "2015-01-01"
+    series:
+      cpi: "CPIAUCSL"      # CPI, all urban consumers
+      core_pce: "PCEPILFE" # Core PCE price index
+      nfp: "PAYEMS"        # Nonfarm payrolls
+      fed_funds: "DFF"     # Effective federal funds rate
+      dxy: "DTWEXBGS"      # Broad USD index
+      yield_curve: "T10Y2Y" # 10Y-2Y spread
+
+# --- Tracked asset universe (CLAUDE.md section 5) ----------------------------
+# tier: nucleo | satelite | riesgo_medio | riesgo_alto | observacion
+# thesis_category groups assets by *failure mode*, not by ticker, to expose
+# concentration disguised as diversification (section 5).
+assets:
+  - symbol: BTC
+    coingecko_id: bitcoin
+    tier: nucleo
+    thesis_category: store_of_value
+    verified: true
+  - symbol: ETH
+    coingecko_id: ethereum
+    tier: nucleo
+    thesis_category: l1_base
+    verified: true
+  - symbol: XRP
+    coingecko_id: ripple
+    tier: satelite
+    thesis_category: payments
+    verified: true
+  - symbol: SOL
+    coingecko_id: solana
+    tier: riesgo_medio
+    thesis_category: l1_high_perf
+    defillama:
+      kind: chain
+      slug: Solana
+    verified: true
+  - symbol: LINK
+    coingecko_id: chainlink
+    tier: riesgo_medio
+    thesis_category: oracle_infra
+    verified: true
+  - symbol: AAVE
+    coingecko_id: aave
+    tier: riesgo_medio
+    thesis_category: defi_lending
+    defillama:
+      kind: protocol
+      slug: aave
+    verified: true
+  - symbol: UNI
+    coingecko_id: uniswap
+    tier: observacion
+    thesis_category: dex
+    defillama:
+      kind: protocol
+      slug: uniswap
+    verified: true
+  - symbol: ONDO
+    coingecko_id: ondo-finance
+    tier: riesgo_alto
+    thesis_category: rwa
+    defillama:
+      kind: protocol
+      slug: ondo-finance
+    verified: true
+  - symbol: XLM
+    coingecko_id: stellar
+    tier: riesgo_alto
+    thesis_category: payments
+    verified: true
+  - symbol: HBAR
+    coingecko_id: hedera-hashgraph
+    tier: riesgo_alto
+    thesis_category: l1_enterprise
+    defillama:
+      kind: chain
+      slug: Hedera
+    verified: true
+  - symbol: SUI
+    coingecko_id: sui
+    tier: riesgo_alto
+    thesis_category: l1_high_perf
+    defillama:
+      kind: chain
+      slug: Sui
+    verified: true
+  - symbol: TAO
+    coingecko_id: bittensor
+    tier: riesgo_alto
+    thesis_category: ai
+    verified: true
+  - symbol: BNB
+    # NOTE (CLAUDE.md section 5): the coingecko_id is verified, but the burn
+    # calendar and idiosyncratic regulatory status still need confirming before
+    # BNB enters any decision — those are qualitative, not covered by the ID check.
+    coingecko_id: binancecoin
+    tier: observacion
+    thesis_category: exchange
+    verified: true
+
+# --- Derived-indicator thresholds --------------------------------------------
+# Placeholders to be calibrated after observing 2-4 weeks of real data
+# (CLAUDE.md section 12 open decision). Kept in config, never in code.
+indicators:
+  dilution_ratio_alert: 0.6   # circulating/max below this => high dilution risk (section 8, SUI case)
+  funding_zscore_window_days: 90
+  funding_zscore_high: 2.0    # crowded longs
+  funding_zscore_low: -2.0    # crowded shorts, squeeze conditions
+  tvl_drop_pct_7d_alert: 20.0 # possible thesis invalidation
+  etf_flow_streak_days: 3     # consecutive negative days => alert
+
+# --- Recurring monthly contribution (CLAUDE.md sections 1, 2 level 4) ---------
+dca:
+  monthly_contribution_min_usd: 200

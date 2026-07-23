@@ -1,0 +1,35 @@
+# Secrets & local data — never commit
+.env
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime artifacts
+streamlit_run.log
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

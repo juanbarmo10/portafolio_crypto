@@ -1,0 +1,62 @@
+[project]
+name = "cryptodash"
+version = "0.1.0"
+description = "Personal crypto-macro analysis dashboard (free data sources only)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Dependencies are grouped by roadmap phase (see CLAUDE.md section 8).
+# Only Phase 0/1 runtime deps are declared as required so the scaffold stays
+# installable before later ingesters exist. Ask before adding new deps (section 11).
+dependencies = [
+    "pyyaml>=6.0",       # config/settings.yaml
+    "python-dotenv>=1.0", # load config/.env
+    "requests>=2.31",    # coingecko / defillama / FRED REST (phase 1)
+    "pandas>=2.1",       # transforms + fetch() DataFrame contract
+    "numpy>=1.26",       # indicators
+]
+# NOTE: FRED is accessed via its REST endpoint directly (ingest/fred.py) rather
+# than the `fredapi` wrapper, because we need output_type=4 (initial release only)
+# for point-in-time release dates (section 9) and per-window bisection to stay under
+# FRED's 2000-vintage-date limit on daily series — neither of which fredapi supports.
+
+[project.optional-dependencies]
+# Phase 2+ ingest (derivatives, scraping) — not needed for the scaffold.
+markets = [
+    "ccxt>=4.2",         # funding + open interest
+    "lxml>=5.0",         # pandas.read_html backend for scrapers
+    "websockets>=12.0",  # binance liquidations stream
+]
+# Dashboard (phase 1 UI).
+app = [
+    "streamlit>=1.30",
+]
+# Development tooling.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Local package modules live at the repo root (ingest/, db/, transform/, ...).
+packages = [
+    "core",
+    "ingest",
+    "db",
+    "transform",
+    "alerts",
+    "validation",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

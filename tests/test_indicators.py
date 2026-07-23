@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from transform.indicators import (
+    abs_change_over_days,
     btc_dominance,
     distance_to_ath,
     dilution_ratio,
@@ -72,6 +73,20 @@ def test_pct_change_asof_tolerates_gaps() -> None:
 def test_pct_change_zero_past_value_returns_none() -> None:
     s = _daily_series([0, 1, 2, 3, 4, 5, 6, 7])
     assert pct_change_over_days(s, 7) is None
+
+
+# --- abs_change_over_days (percentage points) --------------------------------
+
+
+def test_abs_change_over_days() -> None:
+    # Dominance 55.0 eight days ago, 56.2 today -> +1.2 pp over 7d.
+    s = _daily_series([55.0, 55.1, 55.3, 55.5, 55.7, 55.9, 56.0, 56.2])
+    assert abs_change_over_days(s, 7) == pytest.approx(1.2)
+
+
+def test_abs_change_insufficient_history_returns_none() -> None:
+    assert abs_change_over_days(_daily_series([55.0, 56.0]), 30) is None
+    assert abs_change_over_days(pd.Series(dtype="float64"), 30) is None
 
 
 # --- distance_to_ath ---------------------------------------------------------

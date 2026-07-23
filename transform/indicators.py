@@ -76,6 +76,25 @@ def pct_change_over_days(history: pd.Series, days: int) -> float | None:
     return (latest_val / past_val - 1.0) * 100.0
 
 
+def abs_change_over_days(history: pd.Series, days: int) -> float | None:
+    """Absolute change of a daily series over the last ``days`` (latest minus past).
+
+    Like :func:`pct_change_over_days` but returns the raw difference — the right unit
+    for quantities already expressed in percent (e.g. BTC dominance, in percentage
+    points). Uses an as-of lookup tolerant of gaps. None if history is insufficient.
+    """
+    hist = history.dropna()
+    if hist.empty:
+        return None
+    latest_ts = hist.index[-1]
+    latest_val = hist.iloc[-1]
+    cutoff = latest_ts - pd.Timedelta(days=days)
+    past = hist.loc[hist.index <= cutoff]
+    if past.empty:
+        return None
+    return latest_val - past.iloc[-1]
+
+
 def distance_to_ath(price: float | None, ath: float | None) -> float | None:
     """Percent distance from the all-time high (negative = below ATH)."""
     if price is None or ath is None or ath <= 0:
@@ -214,6 +233,11 @@ def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFram
             global_dom[1] if global_dom is not None else btc_dominance(mcaps_by_id)
         )
         df.attrs["btc_dominance_is_global"] = global_dom is not None
+        # Change vs. ~1 month and ~1 year ago, in percentage points (accumulates over
+        # time; None until enough dominance history is stored).
+        dom_hist = series_history(conn, "coingecko", "global:btc_dominance")
+        df.attrs["btc_dominance_chg_30d"] = abs_change_over_days(dom_hist, 30)
+        df.attrs["btc_dominance_chg_365d"] = abs_change_over_days(dom_hist, 365)
     return df
 
 

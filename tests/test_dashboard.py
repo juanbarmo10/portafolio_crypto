@@ -9,6 +9,7 @@ from app.dashboard import (
     _fmt_category,
     _fmt_change,
     _fmt_date,
+    _fmt_pp,
     _fmt_kind,
     _fmt_num,
     _fmt_tier,
@@ -68,6 +69,12 @@ def test_fmt_change_has_arrow_and_sign() -> None:
     assert _fmt_change(-1.2) == "▼ -1.20%"
     assert _fmt_change(0.0) == "▬ +0.00%"
     assert _fmt_change(None) == "—"
+
+
+def test_fmt_pp_percentage_points() -> None:
+    assert _fmt_pp(1.2) == "▲ +1.20 pp"
+    assert _fmt_pp(-0.8) == "▼ -0.80 pp"
+    assert _fmt_pp(None) == "—"
 
 
 def test_fmt_category_uppercase_no_underscore() -> None:

@@ -94,6 +94,14 @@ def _fmt_change(x: float | None) -> str:
     return f"{arrow} {x:+.2f}%"
 
 
+def _fmt_pp(x: float | None) -> str:
+    """Format a change in percentage points with an arrow, or an em dash."""
+    if x is None or pd.isna(x):
+        return "—"
+    arrow = "▲" if x > 0 else "▼" if x < 0 else "▬"
+    return f"{arrow} {x:+.2f} pp"
+
+
 def _fmt_category(cat: str) -> str:
     """Thesis category as uppercase, underscores removed (defi_lending -> DEFI LENDING)."""
     return str(cat).replace("_", " ").upper()
@@ -182,7 +190,8 @@ def _dilution_tooltip(record: dict) -> str:
 
 def _section_macro(conn, settings) -> None:
     """Level 1 — macro context. Interactive grid (sort / reorder / hide columns)."""
-    st.header("1 · Macro — ¿hay apetito por riesgo?")
+    st.header("MACRO")
+    st.caption("¿Hay apetito por riesgo? — nivel 1 del checklist (§2).")
     df = macro_table(conn, settings)
     if df.empty or df["value"].notna().sum() == 0:
         st.info(
@@ -240,19 +249,39 @@ def _section_macro(conn, settings) -> None:
     )
 
 
+def _render_btc_dominance(attrs: dict) -> None:
+    """BTC dominance metric with importance help and 30d / 1y change (in pp)."""
+    dominance = attrs.get("btc_dominance")
+    if dominance is None:
+        return
+    is_global = attrs.get("btc_dominance_is_global", False)
+    label = "Dominancia BTC (mercado total)" if is_global else "Dominancia BTC (universo seguido)"
+    help_text = (
+        "Cuota de BTC sobre la capitalización total de cripto. Subiendo = rotación hacia "
+        "BTC y aversión al riesgo en altcoins; bajando = apetito por altcoins, entorno "
+        "favorable a SOL/LINK (§2, nivel 2). Cambio en puntos porcentuales (pp)."
+    )
+    c1, c2, c3 = st.columns([2, 1, 1])
+    c1.metric(label, f"{dominance:.1f}%", help=help_text)
+    c2.metric("vs. mes (30 d)", _fmt_pp(attrs.get("btc_dominance_chg_30d")))
+    c3.metric("vs. año (365 d)", _fmt_pp(attrs.get("btc_dominance_chg_365d")))
+    st.caption(
+        "Variación de la dominancia en puntos porcentuales (pp). Muestra `—` hasta acumular "
+        "30 días / 1 año de historial (CoinGecko gratuito no ofrece dominancia histórica)."
+    )
+
+
 def _section_portfolio(conn, settings) -> None:
     """Radar: interactive grid (sort / reorder / hide columns), logos, colored changes."""
-    st.header("2 · Radar")
     df = portfolio_table(conn, settings)
+
+    # BTC dominance sits ABOVE the section title.
+    _render_btc_dominance(df.attrs)
+
+    st.header("2 · Radar")
     if df.empty or df["price"].notna().sum() == 0:
         st.info("Sin datos de precio. Ejecuta `python run_ingest.py`.")
         return
-
-    dominance = df.attrs.get("btc_dominance")
-    if dominance is not None:
-        is_global = df.attrs.get("btc_dominance_is_global", False)
-        label = "Dominancia BTC (mercado total)" if is_global else "Dominancia BTC (universo seguido)"
-        st.metric(label, f"{dominance:.1f}%")
 
     rows = []
     for r in df.to_dict("records"):
@@ -402,11 +431,11 @@ def _section_execution(conn, settings) -> None:
 
 def main() -> None:
     """Entry point for `streamlit run app/dashboard.py`."""
-    st.set_page_config(page_title="cryptodash", layout="wide")
+    st.set_page_config(page_title="Portafolio Crypto - Panel", layout="wide")
     settings = load_settings()
     conn = init_db(settings.db_path)
     try:
-        st.title("cryptodash — panel cripto-macro")
+        st.title("Portafolio Crypto - Panel")
         st.caption(
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
             "Frecuencia de consulta óptima: semanal (§2)."

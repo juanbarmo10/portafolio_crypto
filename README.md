@@ -14,15 +14,20 @@ por fases y trampas del dominio) vive en [CLAUDE.md](CLAUDE.md).
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
-- Configuración externalizada en `config/settings.yaml` (activos §5, umbrales, IDs verificados).
+- Configuración externalizada: `config/settings.yaml` (activos §5, umbrales, IDs verificados,
+  metadatos de series FRED, categorías de tesis) y `config/assets_meta.yaml` (logos + descripciones por token).
 - Esquema SQLite en formato largo (`db/schema.sql`) — portable a PostgreSQL/TimescaleDB.
 - Loader idempotente (`db/loader.py`) con `INSERT ... ON CONFLICT DO UPDATE`.
 - Ingesta multi-fuente: **FRED** (macro con `ts`/`ts_release` point-in-time), **CoinGecko**
   (snapshot batch + dominancia de mercado total) y **DefiLlama** (TVL histórico por protocolo y cadena).
-- Indicadores derivados: dominancia BTC, variación 24h/7d/30d, distancia al ATH, MC/TVL, dilución.
-- Dashboard Streamlit con 4 secciones (Macro / Cartera / Tesis / Ejecución), pull, sin auto-refresh.
+- Indicadores derivados: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d,
+  distancia al ATH, MC/TVL, dilución.
+- Dashboard Streamlit con 4 secciones (**Macro / Radar / Tesis / Ejecución**): tablas
+  interactivas (ordenar/reordenar/ocultar columnas), colores y flechas ▲▼, logos de token,
+  y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 37) de esquema, idempotencia, config, indicadores y parsers de ingesta.
+- Tests (`pytest`, 61) de esquema, idempotencia, config, indicadores, parsers de ingesta,
+  helpers del dashboard y humo de render (AppTest).
 
 ## Requisitos
 
@@ -82,14 +87,14 @@ ruff check .      # linting
 
 ```
 cryptodash/
-├── core/           # config (settings.yaml + .env) y logging estructurado
-├── config/         # settings.yaml + .env.example
-├── db/             # schema.sql (formato largo) + loader idempotente
-├── ingest/         # base.py (clase abstracta + retry/backoff); fuentes en fase 1+
-├── transform/      # indicadores derivados (fase 1+)
+├── core/           # config (settings.yaml + assets_meta.yaml + .env) y logging
+├── config/         # settings.yaml · assets_meta.yaml · .env.example
+├── db/             # schema.sql (formato largo) · loader idempotente · queries (lectura)
+├── ingest/         # base.py (clase abstracta + retry/backoff) · fred · coingecko · defillama
+├── transform/      # indicators.py: funciones puras + constructores de tabla
 ├── alerts/         # reglas + Telegram (fase 3)
 ├── validation/     # backtest / métricas (fase 3)
-├── app/            # dashboard Streamlit (fase 1)
-├── tests/          # pytest: esquema, idempotencia, config
+├── app/            # dashboard.py (Streamlit, 4 secciones interactivas)
+├── tests/          # pytest: esquema, idempotencia, config, indicadores, parsers, dashboard, humo
 └── run_ingest.py   # punto de entrada del pipeline
 ```

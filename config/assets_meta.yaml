@@ -2,6 +2,10 @@
 # Kept separate from settings.yaml to keep the core config focused. Logo URLs are
 # CoinGecko image URLs (fetched 2026-07-22); descriptions summarize the §5 thesis.
 # Keyed by asset symbol.
+#
+# Optional field `next_unlock: "YYYY-MM-DD"` — shown in the dilución tooltip. Left
+# unset here; the unlock calendar is ingested in Phase 2 (ingest/unlocks.py) and will
+# populate this. Do NOT fill in guessed dates: an invented unlock date is worse than none.
 
 BTC:
   description: "Reserva de valor. Tesis: flujos ETF spot y dominancia BTC."

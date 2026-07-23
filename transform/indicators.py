@@ -144,6 +144,8 @@ def macro_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
         # unit suffix), configured per series. NFP uses absolute (jobs added).
         change_display = entry.get("change_display", "percent") if isinstance(entry, dict) else "percent"
         change_unit = entry.get("change_unit", "") if isinstance(entry, dict) else ""
+        # How a rise in this indicator maps to crypto: 'inverse' (bearish) / 'direct' (bullish).
+        crypto_effect = entry.get("crypto_effect") if isinstance(entry, dict) else None
 
         rows.append(
             {
@@ -158,6 +160,7 @@ def macro_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
                 "change_abs": change_abs,
                 "change_display": change_display,
                 "change_unit": change_unit,
+                "crypto_effect": crypto_effect,
             }
         )
     return pd.DataFrame(rows)
@@ -177,6 +180,7 @@ def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFram
         price = _val(latest_observation(conn, "coingecko", f"{cid}:price"))
         ath = _val(latest_observation(conn, "coingecko", f"{cid}:ath"))
         mcap = _val(latest_observation(conn, "coingecko", f"{cid}:market_cap"))
+        vol = _val(latest_observation(conn, "coingecko", f"{cid}:volume_24h"))
         circ = _val(latest_observation(conn, "coingecko", f"{cid}:circulating_supply"))
         maxs = _val(latest_observation(conn, "coingecko", f"{cid}:max_supply"))
         price_hist = series_history(conn, "coingecko", f"{cid}:price")
@@ -189,12 +193,14 @@ def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFram
                 "thesis_category": asset["thesis_category"],
                 "logo_url": meta.get("logo_url"),
                 "description": meta.get("description", ""),
+                "next_unlock": meta.get("next_unlock"),
                 "price": price,
                 "chg_24h": pct_change_over_days(price_hist, 1),
                 "chg_7d": pct_change_over_days(price_hist, 7),
                 "chg_30d": pct_change_over_days(price_hist, 30),
                 "dist_ath": distance_to_ath(price, ath),
                 "market_cap": mcap,
+                "volume_24h": vol,
                 "dilution_ratio": dil,
                 "dilution_risk": (dil is not None and dil < dilution_alert),
             }

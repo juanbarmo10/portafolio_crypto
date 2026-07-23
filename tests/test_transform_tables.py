@@ -74,6 +74,18 @@ def test_portfolio_table_includes_asset_meta(conn, settings) -> None:
     btc = table[table["symbol"] == "BTC"].iloc[0]
     assert btc["logo_url"]
     assert btc["description"]
+    assert "volume_24h" in table.columns  # market-cap/volume columns for the Radar
+    assert "next_unlock" in table.columns
+
+
+def test_macro_table_carries_crypto_effect(conn, settings) -> None:
+    upsert_observations(
+        conn,
+        pd.DataFrame([_obs("CPIAUCSL", "2026-06-01T00:00:00+00:00", 100.0, source="fred")]),
+    )
+    table = macro_table(conn, settings)
+    cpi = table[table["series_id"] == "CPIAUCSL"].iloc[0]
+    assert cpi["crypto_effect"] == "inverse"
 
 
 def test_thesis_tvl_table_7d_change(conn, settings) -> None:

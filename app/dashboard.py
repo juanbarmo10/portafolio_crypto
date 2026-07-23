@@ -84,28 +84,26 @@ def _arrow_color(delta: float) -> tuple[str, str]:
 
 
 def _delta_cell_html(record: dict) -> str:
-    """Render the change cell: absolute (with unit) or percent, per series config.
+    """Render the macro change cell: absolute (with unit) or percent, per series config.
 
-    Carries a bullish/bearish/neutral hover tooltip based on the sign of the change.
+    The hover tooltip reflects the effect *on crypto* (crypto_effect), not just the
+    raw direction of the move.
     """
     if record.get("change_display") == "absolute":
-        delta = record.get("change_abs")
-        if delta is None or pd.isna(delta):
-            return "<span style='opacity:0.45'>—</span>"
-        arrow, color = _arrow_color(delta)
-        unit = record.get("change_unit", "")
-        return (
-            f"<span title='{_sentiment(delta)}' style='color:{color};font-weight:600'>"
-            f"{arrow}&nbsp;{delta:+,.0f}{unit}</span>"
-        )
+        value = record.get("change_abs")
+        text_fmt = f"{{:+,.0f}}{record.get('change_unit', '')}"
+    else:
+        value = record.get("change_pct")
+        text_fmt = "{:+.2f}%"
 
-    pct = record.get("change_pct")
-    if pct is None or pd.isna(pct):
+    if value is None or pd.isna(value):
         return "<span style='opacity:0.45'>—</span>"
-    arrow, color = _arrow_color(pct)
+
+    arrow, color = _arrow_color(value)
+    tip = _macro_effect_sentiment(value, record.get("crypto_effect"))
     return (
-        f"<span title='{_sentiment(pct)}' style='color:{color};font-weight:600'>"
-        f"{arrow}&nbsp;{pct:+.2f}%</span>"
+        f"<span title='{tip}' style='color:{color};font-weight:600'>"
+        f"{arrow}&nbsp;{text_fmt.format(value)}</span>"
     )
 
 
@@ -116,6 +114,24 @@ def _sentiment(x: float) -> str:
     if x < 0:
         return "Bajista"
     return "Neutral"
+
+
+def _macro_effect_sentiment(value: float, crypto_effect: str | None) -> str:
+    """Sentiment of a macro change *for crypto*, per the series' crypto_effect.
+
+    'inverse' -> a rise in the indicator is bearish for crypto (CPI, PCE, NFP, rates,
+    DXY); 'direct' -> a rise is bullish (e.g. a steepening yield curve). Falls back to
+    a plain directional label when no effect is configured.
+    """
+    if value == 0:
+        return "Neutral"
+    if crypto_effect == "inverse":
+        bullish = value < 0
+    elif crypto_effect == "direct":
+        bullish = value > 0
+    else:
+        return _sentiment(value)
+    return "Alcista para cripto" if bullish else "Bajista para cripto"
 
 
 def _change_span(x: float | None, sentiment_tooltip: bool = True) -> str:
@@ -135,6 +151,24 @@ def _change_span(x: float | None, sentiment_tooltip: bool = True) -> str:
 def _fmt_tier(tier: str) -> str:
     """Format a tier: drop underscores, capitalize first letter (riesgo_medio -> Riesgo medio)."""
     return str(tier).replace("_", " ").capitalize()
+
+
+def _dilution_tooltip(record: dict) -> str:
+    """Tooltip for the dilution cell: circulating share, risk flag and next unlock.
+
+    The unlock date is shown when available (populated by the Phase 2 unlocks
+    ingester); otherwise it is marked pending rather than guessed.
+    """
+    dil = record.get("dilution_ratio")
+    has_dil = dil is not None and not pd.isna(dil)  # None round-trips to NaN via DataFrame
+    parts = [
+        f"Circulante {dil * 100:.1f}% del máximo" if has_dil else "Suministro sin tope máximo"
+    ]
+    if record.get("dilution_risk"):
+        parts.append("riesgo de dilución alto")
+    nu = record.get("next_unlock")
+    parts.append(f"próximo unlock: {nu}" if nu else "próximo unlock: pendiente (Fase 2)")
+    return " · ".join(parts)
 
 
 # --- Sections ----------------------------------------------------------------
@@ -196,8 +230,8 @@ def _section_macro(conn, settings) -> None:
     st.markdown(_macro_html(df.to_dict("records")), unsafe_allow_html=True)
     st.caption(
         "Δ = variación frente a la observación anterior (p. ej. mensual en CPI); NFP se "
-        "muestra como empleos añadidos en miles (+K), no en %. Pasa el cursor sobre Δ para ver "
-        "si el movimiento es alcista/bajista, y sobre el nombre del indicador para su definición. "
+        "muestra como empleos añadidos en miles (+K), no en %. Pasa el cursor sobre Δ para ver su "
+        "efecto en cripto (alcista/bajista), y sobre el nombre del indicador para su definición. "
         "`Publicado` = fecha de primera publicación; los backtests filtran por ella para evitar "
         "look-ahead (§9)."
     )
@@ -210,6 +244,7 @@ def _portfolio_html(records: list[dict]) -> str:
     num = "font-variant-numeric:tabular-nums;white-space:nowrap;"
     cols = [
         ("Activo", "left"), ("Tramo", "left"), ("Precio", "right"),
+        ("Cap. mercado", "right"), ("Vol. 24h", "right"),
         ("24h", "right"), ("7d", "right"), ("30d", "right"),
         ("Dist. ATH", "right"), ("Dilución", "right"),
     ]
@@ -231,25 +266,28 @@ def _portfolio_html(records: list[dict]) -> str:
             'style="border-bottom:1px dotted currentColor;cursor:help">'
             f'{html.escape(str(r["symbol"]))}</span>'
         )
-        dil = _fmt_ratio(r["dilution_ratio"])
+        # Dilution cell: yellow warning glyph (left of value) + hover tooltip with
+        # circulating share and next unlock. U+FE0E forces text presentation so the
+        # CSS color applies (instead of the multicolor emoji).
+        dil_val = _fmt_ratio(r["dilution_ratio"])
         if r.get("dilution_risk"):
-            # Yellow warning glyph to the LEFT of the value. U+FE0E forces text
-            # presentation so the CSS color applies (instead of the multicolor emoji).
-            icon = (
-                '<span title="Riesgo de dilución alto (circulante/máx por debajo del umbral)" '
-                'style="color:#eab308;font-weight:700">⚠︎</span>'
-            )
-            dil = f"{icon}&nbsp;{dil}"
+            dil_val = f'<span style="color:#eab308;font-weight:700">⚠︎</span>&nbsp;{dil_val}'
+        dil_cell = (
+            f'<span title="{html.escape(_dilution_tooltip(r), quote=True)}" '
+            f'style="cursor:help">{dil_val}</span>'
+        )
         body += (
             "<tr>"
             f'<td style="{td.format(a="left")}">{name}</td>'
             f'<td style="{td.format(a="left")}">{html.escape(_fmt_tier(r["tier"]))}</td>'
             f'<td style="{td.format(a="right")}{num}">{_fmt_usd(r["price"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_fmt_big_usd(r["market_cap"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_fmt_big_usd(r["volume_24h"])}</td>'
             f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_24h"])}</td>'
             f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_7d"])}</td>'
             f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_30d"])}</td>'
             f'<td style="{td.format(a="right")}{num}">{_change_span(r["dist_ath"], sentiment_tooltip=False)}</td>'
-            f'<td style="{td.format(a="right")}{num}">{dil}</td>'
+            f'<td style="{td.format(a="right")}{num}">{dil_cell}</td>'
             "</tr>"
         )
     return f'<table style="border-collapse:collapse;width:100%">{header}{body}</table>'
@@ -273,8 +311,9 @@ def _section_portfolio(conn, settings) -> None:
     st.caption(
         "Variaciones 24h/7d/30d muestran `—` hasta acumular historial de precios. "
         "Verde = alcista, rojo = bajista (pasa el cursor sobre 24h/7d/30d para ver la señal). "
-        "El icono ⚠︎ amarillo junto a la dilución marca circulante/máx por debajo del umbral. "
-        "Pasa el cursor sobre el activo para ver su tesis."
+        "El icono ⚠︎ amarillo marca circulante/máx por debajo del umbral; pasa el cursor sobre "
+        "la dilución para ver el % circulante y el próximo unlock. Pasa el cursor sobre el "
+        "activo para ver su tesis."
     )
 
 

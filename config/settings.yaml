@@ -40,10 +40,14 @@ sources:
         code: "CPIAUCSL"
         label: "CPI"
         description: "Índice de Precios al Consumidor (urbano). Inflación general; al alza cuando los precios suben."
+        # crypto_effect: cómo afecta a cripto una SUBIDA del indicador.
+        # inverse = subida es bajista para cripto; direct = subida es alcista.
+        crypto_effect: inverse   # inflación ↑ → Fed más restrictiva → risk-off
       core_pce:
         code: "PCEPILFE"
         label: "Core PCE"
         description: "PCE subyacente (sin alimentos ni energía). Métrica de inflación preferida por la Fed."
+        crypto_effect: inverse   # igual que CPI: inflación ↑ → bajista para cripto
       nfp:
         code: "PAYEMS"
         label: "NFP"
@@ -52,18 +56,24 @@ sources:
         # que el % es poco informativo. Mostramos el cambio absoluto (empleos añadidos).
         change_display: absolute
         change_unit: "K"   # el valor ya viene en miles, el delta crudo son miles de empleos
+        crypto_effect: inverse   # empleo fuerte → menos recortes → bajista (empleo débil = alcista)
       fed_funds:
         code: "DFF"
         label: "Fed Funds"
         description: "Tasa efectiva de fondos federales. Tipo de referencia de la política monetaria de la Fed."
+        crypto_effect: inverse   # tipos ↑ → risk-off → bajista para cripto
       dxy:
         code: "DTWEXBGS"
         label: "DXY"
         description: "Índice amplio del dólar. Dólar fuerte = viento en contra para activos de riesgo y cripto."
+        crypto_effect: inverse   # dólar fuerte → viento en contra → bajista para cripto
       yield_curve:
         code: "T10Y2Y"
         label: "Curva 10A-2A"
         description: "Spread de tipos 10 años menos 2 años. Negativo (curva invertida) = señal históricamente recesiva."
+        # Simplificación: empinándose/normalizando (subiendo) = sesgo risk-on; profundizar la
+        # inversión (bajando) = señal recesiva. Ajustable si prefieres otra lectura.
+        crypto_effect: direct
 
 # --- Tracked asset universe (CLAUDE.md section 5) ----------------------------
 # tier: nucleo | satelite | riesgo_medio | riesgo_alto | observacion

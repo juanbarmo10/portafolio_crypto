@@ -19,6 +19,8 @@ Writes: nothing.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pandas as pd
 import streamlit as st
 
@@ -30,6 +32,22 @@ from transform.indicators import (
     portfolio_table,
     thesis_tvl_table,
 )
+from transform.rally_quality import (
+    RALLY_CAPITULATION,
+    RALLY_CONVICTION,
+    RALLY_DISTRIBUTION,
+    RALLY_MECHANICAL,
+    etf_flow_summary,
+    market_structure_table,
+)
+
+# Rally-state -> (Spanish label, CSS color) for the market-structure table.
+_RALLY_LABELS = {
+    RALLY_CONVICTION: ("Convicción", "color:#16a34a;font-weight:600"),      # green
+    RALLY_MECHANICAL: ("Mecánico (frágil)", "color:#eab308;font-weight:600"),  # amber
+    RALLY_DISTRIBUTION: ("Distribución", "color:#dc2626;font-weight:600"),   # red
+    RALLY_CAPITULATION: ("Capitulación", "color:#9ca3af;font-weight:600"),   # gray
+}
 
 # --- Formatting helpers ------------------------------------------------------
 
@@ -341,9 +359,137 @@ def _section_portfolio(conn, settings) -> None:
     )
 
 
+def _fmt_funding_z(z: float | None) -> str:
+    """Funding z-score to 2 decimals, or an em dash."""
+    return "—" if z is None or pd.isna(z) else f"{z:+.2f}"
+
+
+def _color_funding_z(cell: object) -> str:
+    """Styler CSS: red/bold when |z| >= 2 (crowded positioning, §8)."""
+    try:
+        z = float(str(cell))
+    except ValueError:
+        return ""
+    return "color:#dc2626;font-weight:700" if abs(z) >= 2 else ""
+
+
+def _rally_label(state: str | None) -> str:
+    """Spanish label for a rally-state code, or an em dash."""
+    return "—" if state is None else _RALLY_LABELS.get(state, (state, ""))[0]
+
+
+def _color_rally(cell: object) -> str:
+    """Styler CSS for a rally-state label cell."""
+    for label, css in _RALLY_LABELS.values():
+        if str(cell) == label:
+            return css
+    return ""
+
+
+def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, int]]:
+    """Return [(symbol, date, days_until)] for configured next_unlock within the window.
+
+    Reads config/assets_meta.yaml (manual dates, §5). Empty until dates are filled in.
+    """
+    today = datetime.now(timezone.utc).date()
+    out: list[tuple[str, str, int]] = []
+    for symbol, meta in settings.asset_meta.items():
+        raw = meta.get("next_unlock") if isinstance(meta, dict) else None
+        if not raw:
+            continue
+        try:
+            date = datetime.strptime(str(raw), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days = (date - today).days
+        if 0 <= days <= within_days:
+            out.append((symbol, str(raw), days))
+    return sorted(out, key=lambda item: item[2])
+
+
+def _section_market_structure(conn, settings) -> None:
+    """Level 2 — market structure: ETF flows, rally quality, funding, unlocks."""
+    st.header("3 · Estructura de mercado")
+    st.caption("¿El rally tiene sustento o es mecánico? — nivel 2 del checklist (§2).")
+
+    # ETF flows: streak of positive/negative days + 5-day sum, per asset.
+    etf = etf_flow_summary(conn, settings)
+    if not etf.empty:
+        cols = st.columns(len(etf))
+        for col, r in zip(cols, etf.to_dict("records")):
+            direction = "entradas" if r["streak_sign"] > 0 else "salidas" if r["streak_sign"] < 0 else "—"
+            col.metric(
+                f"{r['asset']} ETF — racha",
+                f"{r['streak_days']} d de {direction}",
+                delta=f"5 d: {r['sum_5d']:+,.0f} M",
+                delta_color="off",
+                help="Flujo neto diario de ETF spot (Farside, millones USD). Racha = días "
+                "consecutivos del mismo signo, ignorando días sin dato.",
+            )
+    else:
+        st.info("Sin datos de flujos ETF. Ejecuta `python run_ingest.py`.")
+
+    # Rally quality per asset: state, funding z-score, price/OI divergence.
+    ms = market_structure_table(conn, settings)
+    if not ms.empty:
+        rows = [
+            {
+                "Activo": r["symbol"],
+                "Estado": _rally_label(r["rally_state"]),
+                "Funding z": _fmt_funding_z(r["funding_z"]),
+                "Precio 7d": _fmt_change(r["price_chg"]),
+                "OI 7d": _fmt_change(r["oi_chg"]),
+            }
+            for r in ms.to_dict("records")
+        ]
+        show = pd.DataFrame(rows)
+        styler = (
+            show.style
+            .map(_color_rally, subset=["Estado"])
+            .map(_color_funding_z, subset=["Funding z"])
+            .map(_color_by_sign, subset=["Precio 7d", "OI 7d"])
+        )
+        st.dataframe(
+            styler,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Estado": st.column_config.TextColumn(
+                    help="Precio↑ OI↑ = Convicción (dinero nuevo); Precio↑ OI↓ = Mecánico "
+                    "(cierre de cortos, frágil); Precio↓ OI↑ = Distribución; Precio↓ OI↓ = "
+                    "Capitulación. Medido en el perp (7 días)."
+                ),
+                "Funding z": st.column_config.TextColumn(
+                    help="Z-score del funding sobre 90 días. |z|≥2 (rojo) = posicionamiento "
+                    "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
+                ),
+                "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
+            },
+        )
+        st.caption(
+            "Clasificación del rally por divergencia precio/OI y funding z-score (§2 nivel 2, §8). "
+            "Verde/rojo en Precio/OI = dirección; Funding z en rojo = extremo (≥2)."
+        )
+    else:
+        st.info("Sin datos de derivados. Ejecuta `python run_ingest.py` (extra `.[markets]`).")
+
+    # Upcoming unlocks (manual config, §5: revisar siempre).
+    unlocks = _upcoming_unlocks(settings, within_days=30)
+    if unlocks:
+        st.write(
+            "**Próximos unlocks (≤30 d):** "
+            + " · ".join(f"{sym} {date} ({days} d)" for sym, date, days in unlocks)
+        )
+    else:
+        st.caption(
+            "Próximos unlocks: ninguno configurado. Añade `next_unlock: \"YYYY-MM-DD\"` por "
+            "token en `config/assets_meta.yaml` (§5: revisar siempre, sin excepción)."
+        )
+
+
 def _section_thesis(conn, settings) -> None:
     """Level 3 — thesis health. All tokens, grouped by category; interactive grid."""
-    st.header("3 · Tesis — TVL por categoría")
+    st.header("4 · Tesis — TVL por categoría")
     df = thesis_tvl_table(conn, settings)
     if df.empty:
         st.info("Sin activos configurados en `settings.yaml`.")
@@ -408,7 +554,7 @@ def _section_thesis(conn, settings) -> None:
 
 def _section_execution(conn, settings) -> None:
     """Level 4 — DCA plan state."""
-    st.header("4 · Ejecución — plan DCA")
+    st.header("5 · Ejecución — plan DCA")
     status = dca_status(conn, settings)
     c1, c2, c3 = st.columns(3)
     c1.metric("Desplegado", _fmt_usd(status["deployed_usd"]))
@@ -443,6 +589,8 @@ def main() -> None:
         _section_macro(conn, settings)
         st.divider()
         _section_portfolio(conn, settings)
+        st.divider()
+        _section_market_structure(conn, settings)
         st.divider()
         _section_thesis(conn, settings)
         st.divider()

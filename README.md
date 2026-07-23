@@ -6,28 +6,32 @@ derivados y los presenta en Streamlit, con alertas por Telegram y un framework d
 validación estadística de señales.
 
 El contexto completo del proyecto (filosofía de diseño, activos, tesis, hoja de ruta
-por fases y trampas del dominio) vive en [CLAUDE.md](CLAUDE.md).
+por fases y trampas del dominio) vive en [CLAUDE.md](CLAUDE.md). Las **decisiones técnicas
+y ecuaciones** (formulación, efecto en cripto, uso y qué validar) están en [RESEARCH.md](RESEARCH.md).
 
 ## Estado
 
-**Fases 0 y 1 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.
+**Fases 0, 1 y 2 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
 - Configuración externalizada: `config/settings.yaml` (activos §5, umbrales, IDs verificados,
-  metadatos de series FRED, categorías de tesis) y `config/assets_meta.yaml` (logos + descripciones por token).
+  metadatos de series FRED, categorías de tesis, exchanges de derivados, scraper ETF) y
+  `config/assets_meta.yaml` (logos, descripciones y `next_unlock` por token).
 - Esquema SQLite en formato largo (`db/schema.sql`) — portable a PostgreSQL/TimescaleDB.
 - Loader idempotente (`db/loader.py`) con `INSERT ... ON CONFLICT DO UPDATE`.
 - Ingesta multi-fuente: **FRED** (macro con `ts`/`ts_release` point-in-time), **CoinGecko**
-  (snapshot batch + dominancia de mercado total) y **DefiLlama** (TVL histórico por protocolo y cadena).
-- Indicadores derivados: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d,
-  distancia al ATH, MC/TVL, dilución.
-- Dashboard Streamlit con 4 secciones (**Macro / Radar / Tesis / Ejecución**): tablas
-  interactivas (ordenar/reordenar/ocultar columnas), colores y flechas ▲▼, logos de token,
+  (snapshot + dominancia de mercado total), **DefiLlama** (TVL histórico), **derivados**
+  (ccxt: funding, open interest, cierre del perp) y **flujos ETF** (scraper Farside).
+- Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
+  MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
+  **racha de flujos ETF**.
+- Dashboard Streamlit con 5 secciones (**Macro / Radar / Estructura de mercado / Tesis /
+  Ejecución**): tablas interactivas (ordenar/reordenar/ocultar), colores y flechas ▲▼, logos,
   y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 61) de esquema, idempotencia, config, indicadores, parsers de ingesta,
-  helpers del dashboard y humo de render (AppTest).
+- Tests (`pytest`, 85) de esquema, idempotencia, config, indicadores, rally-quality, parsers de
+  ingesta (incl. fixture Farside congelado), helpers del dashboard y humo de render (AppTest).
 
 ## Requisitos
 
@@ -69,9 +73,14 @@ python run_ingest.py --dry-run
 # se puebla solo si FRED_API_KEY está configurada (si no, se salta con warning).
 python run_ingest.py
 
-# Dashboard (requiere el extra ".[app]").
+# Dashboard (requiere el extra ".[app]"). Lanzador de un comando (usa el venv):
+./run_dashboard.sh                    # http://localhost:8501
+# o directamente:
 streamlit run app/dashboard.py
 ```
+
+> Para la ingesta de **derivados y flujos ETF** (Fase 2) instala el extra
+> `pip install -e ".[markets]"` (ccxt, lxml, websockets).
 
 `run_ingest.py` es idempotente: ejecutarlo dos veces no duplica filas. El panel es
 *pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, §2).
@@ -87,14 +96,15 @@ ruff check .      # linting
 
 ```
 cryptodash/
-├── core/           # config (settings.yaml + assets_meta.yaml + .env) y logging
-├── config/         # settings.yaml · assets_meta.yaml · .env.example
-├── db/             # schema.sql (formato largo) · loader idempotente · queries (lectura)
-├── ingest/         # base.py (clase abstracta + retry/backoff) · fred · coingecko · defillama
-├── transform/      # indicators.py: funciones puras + constructores de tabla
-├── alerts/         # reglas + Telegram (fase 3)
-├── validation/     # backtest / métricas (fase 3)
-├── app/            # dashboard.py (Streamlit, 4 secciones interactivas)
-├── tests/          # pytest: esquema, idempotencia, config, indicadores, parsers, dashboard, humo
-└── run_ingest.py   # punto de entrada del pipeline
+├── core/            # config (settings.yaml + assets_meta.yaml + .env) y logging
+├── config/          # settings.yaml · assets_meta.yaml · .env.example
+├── db/              # schema.sql (formato largo) · loader idempotente · queries (lectura)
+├── ingest/          # base · fred · coingecko · defillama · derivatives · etf_flows
+├── transform/       # indicators.py · rally_quality.py (funciones puras + tablas)
+├── alerts/          # reglas + Telegram (fase 3)
+├── validation/      # backtest / métricas (fase 3)
+├── app/             # dashboard.py (Streamlit, 5 secciones interactivas)
+├── tests/           # pytest + fixtures/ (fixture HTML congelado de Farside)
+├── run_ingest.py    # punto de entrada del pipeline
+└── run_dashboard.sh # lanzador del dashboard (un comando)
 ```

@@ -76,6 +76,48 @@ def rally_state(price_change_pct: float | None, oi_change_pct: float | None) -> 
     return RALLY_DISTRIBUTION if oi_up else RALLY_CAPITULATION
 
 
+def flow_streak(total_series: pd.Series) -> tuple[int, int]:
+    """Current consecutive-sign streak of daily ETF flows.
+
+    Zero-flow days (e.g. weekends / not-yet-reported) are ignored so a trailing 0
+    doesn't reset a run of inflows. Returns ``(sign, length)`` where sign is +1 for
+    an inflow streak, -1 for an outflow streak, 0 if there is no data.
+    """
+    values = [v for v in total_series.dropna().tolist() if v != 0.0]
+    if not values:
+        return (0, 0)
+    sign = 1 if values[-1] > 0 else -1
+    count = 0
+    for value in reversed(values):
+        if (value > 0) == (sign > 0):
+            count += 1
+        else:
+            break
+    return (sign, count)
+
+
+def etf_flow_summary(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Per-asset ETF-flow summary: latest daily flow, streak and 5-day sum (level 2)."""
+    assets: list[str] = settings.source("etf_flows").get("assets", ["btc", "eth"])
+    rows: list[dict[str, Any]] = []
+    for asset in assets:
+        series = series_history(conn, "farside", f"etf:{asset}:total").dropna()
+        if series.empty:
+            continue
+        sign, days = flow_streak(series)
+        rows.append(
+            {
+                "asset": asset.upper(),
+                "latest_ts": series.index[-1].strftime("%Y-%m-%d"),
+                "latest_flow": float(series.iloc[-1]),
+                "streak_sign": sign,
+                "streak_days": days,
+                "sum_5d": float(series.tail(5).sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _combined_oi(conn: sqlite3.Connection, symbol: str, exchanges: list[str]) -> pd.Series:
     """Sum USD open interest across exchanges into one daily series (aligned by date)."""
     frames = [series_history(conn, "derivatives", f"{symbol}:oi:{ex}") for ex in exchanges]

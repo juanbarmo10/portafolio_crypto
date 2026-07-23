@@ -9,6 +9,7 @@ from transform.rally_quality import (
     RALLY_CONVICTION,
     RALLY_DISTRIBUTION,
     RALLY_MECHANICAL,
+    flow_streak,
     funding_zscore,
     rally_state,
 )
@@ -69,3 +70,29 @@ def test_rally_state_missing_returns_none() -> None:
     assert rally_state(None, 3.0) is None
     assert rally_state(5.0, None) is None
     assert rally_state(float("nan"), 3.0) is None
+
+
+# --- flow_streak -------------------------------------------------------------
+
+
+def _series(values: list[float]) -> pd.Series:
+    idx = pd.date_range(end="2026-07-23", periods=len(values), freq="D", tz="UTC")
+    return pd.Series(values, index=idx, dtype="float64")
+
+
+def test_flow_streak_inflow_run() -> None:
+    # 3 consecutive inflows after an outflow.
+    assert flow_streak(_series([-10.0, 5.0, 8.0, 12.0])) == (1, 3)
+
+
+def test_flow_streak_outflow_run() -> None:
+    assert flow_streak(_series([10.0, -5.0, -8.0])) == (-1, 2)
+
+
+def test_flow_streak_ignores_trailing_zero() -> None:
+    # A trailing 0-flow day (not yet reported) must not reset the inflow streak.
+    assert flow_streak(_series([5.0, 8.0, 12.0, 0.0])) == (1, 3)
+
+
+def test_flow_streak_empty() -> None:
+    assert flow_streak(pd.Series(dtype="float64")) == (0, 0)

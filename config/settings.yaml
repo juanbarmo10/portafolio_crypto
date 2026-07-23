@@ -36,6 +36,13 @@ sources:
     oi_history_days: 30           # Binance OI-history endpoint caps ~30 days
     zscore_window_days: 90        # funding z-score window (§8, §2 nivel 2)
     request_timeout_ms: 20000
+  etf_flows:
+    # Farside scraper (Phase 2). Fragile by design (§9): frozen HTML fixture + fail
+    # loudly on structure change. Values are in USD millions.
+    base_url: "https://farside.co.uk"
+    assets: ["btc", "eth"]        # -> https://farside.co.uk/btc/ , /eth/
+    request_timeout_s: 25
+    user_agent: "cryptodash/0.1 (personal research dashboard; contact via repo)"
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20

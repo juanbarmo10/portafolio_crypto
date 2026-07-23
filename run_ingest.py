@@ -28,6 +28,7 @@ from ingest.base import Ingester
 from ingest.coingecko import CoinGeckoIngester
 from ingest.defillama import DefiLlamaIngester
 from ingest.derivatives import DerivativesIngester
+from ingest.etf_flows import EtfFlowsIngester
 from ingest.fred import FredIngester
 
 log = get_logger(__name__)
@@ -43,6 +44,7 @@ def build_ingesters(settings: Settings) -> list[Ingester]:
         CoinGeckoIngester(settings),
         DefiLlamaIngester(settings),
         DerivativesIngester(settings),
+        EtfFlowsIngester(settings),
     ]
     try:
         ingesters.append(FredIngester(settings))

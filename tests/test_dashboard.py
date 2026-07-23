@@ -5,10 +5,13 @@ from __future__ import annotations
 from app.dashboard import (
     _color_by_sign,
     _color_dilution,
+    _color_funding_z,
+    _color_rally,
     _dilution_tooltip,
     _fmt_category,
     _fmt_change,
     _fmt_date,
+    _fmt_funding_z,
     _fmt_pp,
     _fmt_kind,
     _fmt_num,
@@ -16,8 +19,10 @@ from app.dashboard import (
     _macro_change_value,
     _macro_delta_str,
     _macro_effect_sentiment,
+    _rally_label,
     _sentiment,
 )
+from transform.rally_quality import RALLY_CONVICTION, RALLY_MECHANICAL
 
 
 def _radar_record(**overrides) -> dict:
@@ -69,6 +74,23 @@ def test_fmt_change_has_arrow_and_sign() -> None:
     assert _fmt_change(-1.2) == "▼ -1.20%"
     assert _fmt_change(0.0) == "▬ +0.00%"
     assert _fmt_change(None) == "—"
+
+
+def test_rally_label_and_color() -> None:
+    assert _rally_label(RALLY_CONVICTION) == "Convicción"
+    assert _rally_label(RALLY_MECHANICAL) == "Mecánico (frágil)"
+    assert _rally_label(None) == "—"
+    assert "16a34a" in _color_rally("Convicción")   # green
+    assert "eab308" in _color_rally("Mecánico (frágil)")  # amber
+    assert _color_rally("—") == ""
+
+
+def test_funding_z_format_and_color() -> None:
+    assert _fmt_funding_z(1.234) == "+1.23"
+    assert _fmt_funding_z(None) == "—"
+    assert "dc2626" in _color_funding_z("+2.10")   # crowded -> red
+    assert _color_funding_z("+1.00") == ""         # within band
+    assert _color_funding_z("—") == ""             # non-numeric
 
 
 def test_fmt_pp_percentage_points() -> None:

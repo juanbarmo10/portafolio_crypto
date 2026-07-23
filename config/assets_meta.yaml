@@ -1,0 +1,44 @@
+# Per-asset display metadata for the dashboard Radar table (logos + tooltips).
+# Kept separate from settings.yaml to keep the core config focused. Logo URLs are
+# CoinGecko image URLs (fetched 2026-07-22); descriptions summarize the §5 thesis.
+# Keyed by asset symbol.
+
+BTC:
+  description: "Reserva de valor. Tesis: flujos ETF spot y dominancia BTC."
+  logo_url: "https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696501400"
+ETH:
+  description: "L1 base / infraestructura. Tesis: staking, quema y flujos ETF."
+  logo_url: "https://coin-images.coingecko.com/coins/images/279/large/ethereum.png?1696501628"
+XRP:
+  description: "Pagos. Tesis: catalizador ETF y claridad regulatoria."
+  logo_url: "https://coin-images.coingecko.com/coins/images/44/large/xrp-symbol-white-128.png?1696501442"
+SOL:
+  description: "L1 de alto rendimiento. Tesis: revenue on-chain y actividad de red."
+  logo_url: "https://coin-images.coingecko.com/coins/images/4128/large/solana.png?1718769756"
+LINK:
+  description: "Oráculos / infraestructura. Tesis: adopción CCIP y TVL RWA asegurado."
+  logo_url: "https://coin-images.coingecko.com/coins/images/877/large/Chainlink_Logo_500.png?1760023405"
+AAVE:
+  description: "DeFi lending. Tesis: TVL, revenue y avance de Aavenomics 3.0."
+  logo_url: "https://coin-images.coingecko.com/coins/images/12645/large/aave-token-round.png?1720472354"
+UNI:
+  description: "DEX. Tesis: volumen y quema efectiva tras el fee-switch."
+  logo_url: "https://coin-images.coingecko.com/coins/images/12504/large/uniswap-logo.png?1720676669"
+ONDO:
+  description: "RWA puro. Tesis: TVL y resultado del voto de fee switch."
+  logo_url: "https://coin-images.coingecko.com/coins/images/26580/large/ONDO.png?1696525656"
+XLM:
+  description: "Pagos institucionales. Tesis: TVL y overhang de la SDF."
+  logo_url: "https://coin-images.coingecko.com/coins/images/100/large/fmpFRHHQ_400x400.jpg?1735231350"
+HBAR:
+  description: "L1 empresarial. Riesgo: uso de red que no se traduce en demanda de token."
+  logo_url: "https://coin-images.coingecko.com/coins/images/3688/large/hbar.png?1696504364"
+SUI:
+  description: "L1 de alto rendimiento. Riesgo: dilución multi-año, unlocks hasta 2030."
+  logo_url: "https://coin-images.coingecko.com/coins/images/26375/large/sui-ocean-square.png?1727791290"
+TAO:
+  description: "IA descentralizada. Métrica crítica: ingresos de subnets vs. emisiones."
+  logo_url: "https://coin-images.coingecko.com/coins/images/28452/large/ARUsPeNQ_400x400.jpeg?1696527447"
+BNB:
+  description: "Exchange / L1. Tesis: quemas; riesgo regulatorio idiosincrático de Binance."
+  logo_url: "https://coin-images.coingecko.com/coins/images/825/large/bnb-icon2_2x.png?1696501970"

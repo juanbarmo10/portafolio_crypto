@@ -181,11 +181,14 @@ def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFram
         maxs = _val(latest_observation(conn, "coingecko", f"{cid}:max_supply"))
         price_hist = series_history(conn, "coingecko", f"{cid}:price")
         dil = dilution_ratio(circ, maxs)
+        meta = settings.meta_for(asset["symbol"])
         rows.append(
             {
                 "symbol": asset["symbol"],
                 "tier": asset["tier"],
                 "thesis_category": asset["thesis_category"],
+                "logo_url": meta.get("logo_url"),
+                "description": meta.get("description", ""),
                 "price": price,
                 "chg_24h": pct_change_over_days(price_hist, 1),
                 "chg_7d": pct_change_over_days(price_hist, 7),

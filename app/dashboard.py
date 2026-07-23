@@ -84,20 +84,57 @@ def _arrow_color(delta: float) -> tuple[str, str]:
 
 
 def _delta_cell_html(record: dict) -> str:
-    """Render the change cell: absolute (with unit) or percent, per series config."""
+    """Render the change cell: absolute (with unit) or percent, per series config.
+
+    Carries a bullish/bearish/neutral hover tooltip based on the sign of the change.
+    """
     if record.get("change_display") == "absolute":
         delta = record.get("change_abs")
         if delta is None or pd.isna(delta):
             return "<span style='opacity:0.45'>—</span>"
         arrow, color = _arrow_color(delta)
         unit = record.get("change_unit", "")
-        return f"<span style='color:{color};font-weight:600'>{arrow}&nbsp;{delta:+,.0f}{unit}</span>"
+        return (
+            f"<span title='{_sentiment(delta)}' style='color:{color};font-weight:600'>"
+            f"{arrow}&nbsp;{delta:+,.0f}{unit}</span>"
+        )
 
     pct = record.get("change_pct")
     if pct is None or pd.isna(pct):
         return "<span style='opacity:0.45'>—</span>"
     arrow, color = _arrow_color(pct)
-    return f"<span style='color:{color};font-weight:600'>{arrow}&nbsp;{pct:+.2f}%</span>"
+    return (
+        f"<span title='{_sentiment(pct)}' style='color:{color};font-weight:600'>"
+        f"{arrow}&nbsp;{pct:+.2f}%</span>"
+    )
+
+
+def _sentiment(x: float) -> str:
+    """Classify a change as bullish/bearish/neutral (Spanish, for hover tooltips)."""
+    if x > 0:
+        return "Alcista"
+    if x < 0:
+        return "Bajista"
+    return "Neutral"
+
+
+def _change_span(x: float | None, sentiment_tooltip: bool = True) -> str:
+    """Colored arrow + signed percent.
+
+    When ``sentiment_tooltip`` is True the cell carries a bullish/bearish/neutral
+    hover tooltip. It is disabled for Distance-to-ATH, where "below ATH" is a state,
+    not a directional signal.
+    """
+    if x is None or pd.isna(x):
+        return "<span style='opacity:0.45'>—</span>"
+    arrow, color = _arrow_color(x)
+    title = f"title='{_sentiment(x)}' " if sentiment_tooltip else ""
+    return f"<span {title}style='color:{color};font-weight:600'>{arrow}&nbsp;{x:+.2f}%</span>"
+
+
+def _fmt_tier(tier: str) -> str:
+    """Format a tier: drop underscores, capitalize first letter (riesgo_medio -> Riesgo medio)."""
+    return str(tier).replace("_", " ").capitalize()
 
 
 # --- Sections ----------------------------------------------------------------
@@ -159,15 +196,68 @@ def _section_macro(conn, settings) -> None:
     st.markdown(_macro_html(df.to_dict("records")), unsafe_allow_html=True)
     st.caption(
         "Δ = variación frente a la observación anterior (p. ej. mensual en CPI); NFP se "
-        "muestra como empleos añadidos en miles (+K), no en %. `Publicado` = fecha de primera "
-        "publicación; los backtests filtran por ella para evitar look-ahead (§9). Pasa el cursor "
-        "sobre el nombre del indicador para ver su definición."
+        "muestra como empleos añadidos en miles (+K), no en %. Pasa el cursor sobre Δ para ver "
+        "si el movimiento es alcista/bajista, y sobre el nombre del indicador para su definición. "
+        "`Publicado` = fecha de primera publicación; los backtests filtran por ella para evitar "
+        "look-ahead (§9)."
     )
 
 
+def _portfolio_html(records: list[dict]) -> str:
+    """Build the Radar table as HTML: logos, name tooltips, colored change cells."""
+    th = "padding:6px 16px 6px 0;text-align:{a};border-bottom:2px solid rgba(128,128,128,0.35);font-weight:600;"
+    td = "padding:6px 16px 6px 0;text-align:{a};border-bottom:1px solid rgba(128,128,128,0.18);"
+    num = "font-variant-numeric:tabular-nums;white-space:nowrap;"
+    cols = [
+        ("Activo", "left"), ("Tramo", "left"), ("Precio", "right"),
+        ("24h", "right"), ("7d", "right"), ("30d", "right"),
+        ("Dist. ATH", "right"), ("Dilución", "right"),
+    ]
+    header = "<tr>" + "".join(f'<th style="{th.format(a=a)}">{c}</th>' for c, a in cols) + "</tr>"
+
+    body = ""
+    for r in records:
+        if r["price"] is None or pd.isna(r["price"]):
+            continue
+        logo = ""
+        if r.get("logo_url"):
+            logo = (
+                f'<img src="{html.escape(str(r["logo_url"]), quote=True)}" '
+                'width="20" height="20" loading="lazy" '
+                'style="vertical-align:middle;border-radius:50%;margin-right:6px">'
+            )
+        name = (
+            f'{logo}<span title="{html.escape(str(r.get("description", "")), quote=True)}" '
+            'style="border-bottom:1px dotted currentColor;cursor:help">'
+            f'{html.escape(str(r["symbol"]))}</span>'
+        )
+        dil = _fmt_ratio(r["dilution_ratio"])
+        if r.get("dilution_risk"):
+            # Yellow warning glyph to the LEFT of the value. U+FE0E forces text
+            # presentation so the CSS color applies (instead of the multicolor emoji).
+            icon = (
+                '<span title="Riesgo de dilución alto (circulante/máx por debajo del umbral)" '
+                'style="color:#eab308;font-weight:700">⚠︎</span>'
+            )
+            dil = f"{icon}&nbsp;{dil}"
+        body += (
+            "<tr>"
+            f'<td style="{td.format(a="left")}">{name}</td>'
+            f'<td style="{td.format(a="left")}">{html.escape(_fmt_tier(r["tier"]))}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_fmt_usd(r["price"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_24h"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_7d"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_30d"])}</td>'
+            f'<td style="{td.format(a="right")}{num}">{_change_span(r["dist_ath"], sentiment_tooltip=False)}</td>'
+            f'<td style="{td.format(a="right")}{num}">{dil}</td>'
+            "</tr>"
+        )
+    return f'<table style="border-collapse:collapse;width:100%">{header}{body}</table>'
+
+
 def _section_portfolio(conn, settings) -> None:
-    """Portfolio state: price, changes, distance to ATH, dilution flag."""
-    st.header("2 · Estado de cartera")
+    """Radar: price, changes, distance to ATH, dilution flag."""
+    st.header("2 · Radar")
     df = portfolio_table(conn, settings)
     if df.empty or df["price"].notna().sum() == 0:
         st.info("Sin datos de precio. Ejecuta `python run_ingest.py`.")
@@ -179,23 +269,12 @@ def _section_portfolio(conn, settings) -> None:
         label = "Dominancia BTC (mercado total)" if is_global else "Dominancia BTC (universo seguido)"
         st.metric(label, f"{dominance:.1f}%")
 
-    show = pd.DataFrame(
-        {
-            "Activo": df["symbol"],
-            "Tramo": df["tier"],
-            "Precio": df["price"].map(_fmt_usd),
-            "24h": df["chg_24h"].map(_fmt_pct),
-            "7d": df["chg_7d"].map(_fmt_pct),
-            "30d": df["chg_30d"].map(_fmt_pct),
-            "Dist. ATH": df["dist_ath"].map(_fmt_pct),
-            "Dilución": df["dilution_ratio"].map(_fmt_ratio),
-            "Riesgo dil.": df["dilution_risk"].map(lambda b: "⚠️" if b else ""),
-        }
-    )
-    st.dataframe(show, hide_index=True, use_container_width=True)
+    st.markdown(_portfolio_html(df.to_dict("records")), unsafe_allow_html=True)
     st.caption(
-        "Las variaciones 24h/7d/30d muestran `—` hasta que se acumule suficiente "
-        "historial de precios en la base de datos. ⚠️ = circulante/máx < umbral de dilución."
+        "Variaciones 24h/7d/30d muestran `—` hasta acumular historial de precios. "
+        "Verde = alcista, rojo = bajista (pasa el cursor sobre 24h/7d/30d para ver la señal). "
+        "El icono ⚠︎ amarillo junto a la dilución marca circulante/máx por debajo del umbral. "
+        "Pasa el cursor sobre el activo para ver su tesis."
     )
 
 

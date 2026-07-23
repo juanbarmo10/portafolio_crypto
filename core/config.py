@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 CONFIG_DIR: Path = REPO_ROOT / "config"
 SETTINGS_PATH: Path = CONFIG_DIR / "settings.yaml"
+ASSETS_META_PATH: Path = CONFIG_DIR / "assets_meta.yaml"
 ENV_PATH: Path = CONFIG_DIR / ".env"
 
 
@@ -48,11 +49,16 @@ class Settings:
     db_path: Path
     log_level: str
     secrets: dict[str, str] = field(default_factory=dict)
+    asset_meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def assets(self) -> list[dict[str, Any]]:
         """Return the tracked-asset list (CLAUDE.md section 5)."""
         return list(self.raw.get("assets", []))
+
+    def meta_for(self, symbol: str) -> dict[str, Any]:
+        """Return display metadata (logo_url, description) for an asset symbol."""
+        return dict(self.asset_meta.get(symbol, {}))
 
     def source(self, name: str) -> dict[str, Any]:
         """Return the parameter block for a named data source (e.g. 'coingecko')."""
@@ -88,6 +94,9 @@ def load_settings() -> Settings:
 
     raw = _load_yaml(SETTINGS_PATH)
 
+    # Optional per-asset display metadata (logos, tooltips). Absent -> empty.
+    asset_meta = _load_yaml(ASSETS_META_PATH) if ASSETS_META_PATH.exists() else {}
+
     db_rel = raw.get("database", {}).get("path", "cryptodash.db")
     db_path = Path(db_rel)
     if not db_path.is_absolute():
@@ -106,4 +115,5 @@ def load_settings() -> Settings:
         db_path=db_path,
         log_level=str(log_level).upper(),
         secrets=secrets,
+        asset_meta=asset_meta,
     )

@@ -68,6 +68,14 @@ def test_portfolio_table_computes_dilution_and_dominance(conn, settings) -> None
     assert table.attrs["btc_dominance"] is not None
 
 
+def test_portfolio_table_includes_asset_meta(conn, settings) -> None:
+    # logo_url and description come from config/assets_meta.yaml, present for every row.
+    table = portfolio_table(conn, settings)
+    btc = table[table["symbol"] == "BTC"].iloc[0]
+    assert btc["logo_url"]
+    assert btc["description"]
+
+
 def test_thesis_tvl_table_7d_change(conn, settings) -> None:
     # Aave TVL: 100 eight days ago, 110 today -> +10% over 7d.
     df = pd.DataFrame(

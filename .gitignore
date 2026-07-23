@@ -28,6 +28,10 @@ htmlcov/
 streamlit_run.log
 *.log
 
+# Local tooling / agent state
+.claude/
+.agents/
+
 # OS / editor
 .DS_Store
 .idea/

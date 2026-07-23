@@ -27,6 +27,7 @@ from db.loader import init_db, upsert_observations
 from ingest.base import Ingester
 from ingest.coingecko import CoinGeckoIngester
 from ingest.defillama import DefiLlamaIngester
+from ingest.derivatives import DerivativesIngester
 from ingest.fred import FredIngester
 
 log = get_logger(__name__)
@@ -41,6 +42,7 @@ def build_ingesters(settings: Settings) -> list[Ingester]:
     ingesters: list[Ingester] = [
         CoinGeckoIngester(settings),
         DefiLlamaIngester(settings),
+        DerivativesIngester(settings),
     ]
     try:
         ingesters.append(FredIngester(settings))

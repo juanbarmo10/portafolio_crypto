@@ -28,6 +28,14 @@ sources:
     request_timeout_s: 20
     # Keep this many days of historical TVL per protocol/chain (enough for 7/30/90d).
     history_days: 400
+  derivatives:
+    # ccxt perpetual-swap data (Phase 2). Public endpoints, no key.
+    exchanges: ["binance", "bybit"]
+    quote: "USDT"                 # perp symbol = "<SYMBOL>/<quote>:<quote>"
+    funding_history_days: 90      # funding is 8h; ~270 points -> z-score window
+    oi_history_days: 30           # Binance OI-history endpoint caps ~30 days
+    zscore_window_days: 90        # funding z-score window (§8, §2 nivel 2)
+    request_timeout_ms: 20000
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20

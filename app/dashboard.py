@@ -19,8 +19,6 @@ Writes: nothing.
 
 from __future__ import annotations
 
-import html
-
 import pandas as pd
 import streamlit as st
 
@@ -74,37 +72,59 @@ def _fmt_num(x: float | None) -> str:
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
-def _arrow_color(delta: float) -> tuple[str, str]:
-    """Return (arrow, color) for a signed change: green up, red down, gray flat."""
-    if delta > 0:
-        return "▲", "#16a34a"  # green
-    if delta < 0:
-        return "▼", "#dc2626"  # red
-    return "▬", "#9ca3af"  # neutral gray
+def _color_by_sign(cell: object) -> str:
+    """pandas Styler CSS: green for up, red for down, nothing otherwise.
 
-
-def _delta_cell_html(record: dict) -> str:
-    """Render the macro change cell: absolute (with unit) or percent, per series config.
-
-    The hover tooltip reflects the effect *on crypto* (crypto_effect), not just the
-    raw direction of the move.
+    Operates on the formatted display string, which may start with an arrow
+    ('▲ +2.50%', '▼ -17K') or a bare sign ('+0.35%', '-1.20%').
     """
+    s = str(cell)
+    if s.startswith("▲") or s.startswith("+"):
+        return "color:#16a34a"  # green
+    if s.startswith("▼") or s.startswith("-"):
+        return "color:#dc2626"  # red
+    return ""
+
+
+def _fmt_change(x: float | None) -> str:
+    """Format a percent change with a leading up/down/flat arrow, or an em dash."""
+    if x is None or pd.isna(x):
+        return "—"
+    arrow = "▲" if x > 0 else "▼" if x < 0 else "▬"
+    return f"{arrow} {x:+.2f}%"
+
+
+def _fmt_category(cat: str) -> str:
+    """Thesis category as uppercase, underscores removed (defi_lending -> DEFI LENDING)."""
+    return str(cat).replace("_", " ").upper()
+
+
+def _fmt_kind(kind: str | None) -> str:
+    """TVL source kind label: protocol -> Protocolo, chain -> Cadena, else em dash."""
+    return {"protocol": "Protocolo", "chain": "Cadena"}.get(kind, "—")
+
+
+def _color_dilution(cell: object) -> str:
+    """pandas Styler CSS: yellow/bold when the dilution cell carries the ⚠ marker."""
+    return "color:#eab308;font-weight:700" if "⚠" in str(cell) else ""
+
+
+def _macro_change_value(record: dict) -> float | None:
+    """The change magnitude of a macro row (absolute for NFP, else percent)."""
     if record.get("change_display") == "absolute":
-        value = record.get("change_abs")
-        text_fmt = f"{{:+,.0f}}{record.get('change_unit', '')}"
-    else:
-        value = record.get("change_pct")
-        text_fmt = "{:+.2f}%"
+        return record.get("change_abs")
+    return record.get("change_pct")
 
+
+def _macro_delta_str(record: dict) -> str:
+    """Format the macro Δ with a leading arrow: '▲ +150K' (absolute) or '▲ +0.35%'."""
+    value = _macro_change_value(record)
     if value is None or pd.isna(value):
-        return "<span style='opacity:0.45'>—</span>"
-
-    arrow, color = _arrow_color(value)
-    tip = _macro_effect_sentiment(value, record.get("crypto_effect"))
-    return (
-        f"<span title='{tip}' style='color:{color};font-weight:600'>"
-        f"{arrow}&nbsp;{text_fmt.format(value)}</span>"
-    )
+        return "—"
+    arrow = "▲" if value > 0 else "▼" if value < 0 else "▬"
+    if record.get("change_display") == "absolute":
+        return f"{arrow} {value:+,.0f}{record.get('change_unit', '')}"
+    return f"{arrow} {value:+.2f}%"
 
 
 def _sentiment(x: float) -> str:
@@ -134,20 +154,6 @@ def _macro_effect_sentiment(value: float, crypto_effect: str | None) -> str:
     return "Alcista para cripto" if bullish else "Bajista para cripto"
 
 
-def _change_span(x: float | None, sentiment_tooltip: bool = True) -> str:
-    """Colored arrow + signed percent.
-
-    When ``sentiment_tooltip`` is True the cell carries a bullish/bearish/neutral
-    hover tooltip. It is disabled for Distance-to-ATH, where "below ATH" is a state,
-    not a directional signal.
-    """
-    if x is None or pd.isna(x):
-        return "<span style='opacity:0.45'>—</span>"
-    arrow, color = _arrow_color(x)
-    title = f"title='{_sentiment(x)}' " if sentiment_tooltip else ""
-    return f"<span {title}style='color:{color};font-weight:600'>{arrow}&nbsp;{x:+.2f}%</span>"
-
-
 def _fmt_tier(tier: str) -> str:
     """Format a tier: drop underscores, capitalize first letter (riesgo_medio -> Riesgo medio)."""
     return str(tier).replace("_", " ").capitalize()
@@ -174,51 +180,8 @@ def _dilution_tooltip(record: dict) -> str:
 # --- Sections ----------------------------------------------------------------
 
 
-def _macro_html(records: list[dict]) -> str:
-    """Build the macro table as HTML: hover tooltips, colored deltas, date-only.
-
-    An HTML table (rather than st.dataframe) is used so each indicator name can
-    carry a per-row ``title`` tooltip and the delta cell can be individually
-    colored — neither of which st.dataframe supports.
-    """
-    th = "padding:6px 16px 6px 0;text-align:{a};border-bottom:2px solid rgba(128,128,128,0.35);font-weight:600;"
-    td = "padding:6px 16px 6px 0;text-align:{a};border-bottom:1px solid rgba(128,128,128,0.18);"
-    num = "font-variant-numeric:tabular-nums;white-space:nowrap;"
-
-    header = (
-        "<tr>"
-        f"<th style=\"{th.format(a='left')}\">Indicador</th>"
-        f"<th style=\"{th.format(a='right')}\">Último</th>"
-        f"<th style=\"{th.format(a='right')}\">Δ vs. previo</th>"
-        f"<th style=\"{th.format(a='right')}\">Fecha ref.</th>"
-        f"<th style=\"{th.format(a='right')}\">Publicado</th>"
-        "</tr>"
-    )
-    body = ""
-    for r in records:
-        if r["value"] is None or pd.isna(r["value"]):
-            continue
-        desc = html.escape(str(r.get("description", "")), quote=True)
-        label = html.escape(str(r["label"]))
-        name = (
-            f'<span title="{desc}" '
-            'style="border-bottom:1px dotted currentColor;cursor:help">'
-            f"{label}</span>"
-        )
-        body += (
-            "<tr>"
-            f"<td style=\"{td.format(a='left')}\">{name}</td>"
-            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_num(r['value'])}</td>"
-            f"<td style=\"{td.format(a='right')}{num}\">{_delta_cell_html(r)}</td>"
-            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_date(r['ts'])}</td>"
-            f"<td style=\"{td.format(a='right')}{num}\">{_fmt_date(r['ts_release'])}</td>"
-            "</tr>"
-        )
-    return f'<table style="border-collapse:collapse;width:100%">{header}{body}</table>'
-
-
 def _section_macro(conn, settings) -> None:
-    """Level 1 — macro context. Rendered first and prominently (non-negotiable)."""
+    """Level 1 — macro context. Interactive grid (sort / reorder / hide columns)."""
     st.header("1 · Macro — ¿hay apetito por riesgo?")
     df = macro_table(conn, settings)
     if df.empty or df["value"].notna().sum() == 0:
@@ -227,74 +190,58 @@ def _section_macro(conn, settings) -> None:
             "`python run_ingest.py` para poblar CPI, PCE, NFP, Fed Funds, DXY y la curva."
         )
         return
-    st.markdown(_macro_html(df.to_dict("records")), unsafe_allow_html=True)
+
+    rows = []
+    for r in df.to_dict("records"):
+        if r["value"] is None or pd.isna(r["value"]):
+            continue
+        chg = _macro_change_value(r)
+        signal = (
+            "—"
+            if chg is None or pd.isna(chg)
+            else _macro_effect_sentiment(chg, r["crypto_effect"])
+        )
+        rows.append(
+            {
+                "Indicador": r["label"],
+                "Último": _fmt_num(r["value"]),
+                "Δ vs. previo": _macro_delta_str(r),
+                "Señal cripto": signal,
+                "Fecha ref.": _fmt_date(r["ts"]),
+                "Publicado": _fmt_date(r["ts_release"]),
+                "Descripción": r.get("description", ""),
+            }
+        )
+    show = pd.DataFrame(rows)
+    styler = show.style.map(_color_by_sign, subset=["Δ vs. previo"])
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Δ vs. previo": st.column_config.TextColumn(
+                help="Variación frente a la observación anterior; NFP en miles de empleos (+K)."
+            ),
+            "Señal cripto": st.column_config.TextColumn(
+                help="Efecto del movimiento en cripto (alcista/bajista), no la dirección cruda."
+            ),
+            "Publicado": st.column_config.TextColumn(
+                help="Fecha de primera publicación; los backtests filtran por ella (look-ahead, §9)."
+            ),
+            "Descripción": st.column_config.TextColumn(
+                width="medium", help="Definición del indicador."
+            ),
+        },
+    )
     st.caption(
-        "Δ = variación frente a la observación anterior (p. ej. mensual en CPI); NFP se "
-        "muestra como empleos añadidos en miles (+K), no en %. Pasa el cursor sobre Δ para ver su "
-        "efecto en cripto (alcista/bajista), y sobre el nombre del indicador para su definición. "
-        "`Publicado` = fecha de primera publicación; los backtests filtran por ella para evitar "
-        "look-ahead (§9)."
+        "Tabla interactiva: arrastra las cabeceras para reordenar y usa el menú de cada "
+        "columna para ordenar u ocultar. `Señal cripto` traduce el movimiento a su efecto "
+        "en cripto (CPI/PCE/NFP/Fed Funds/DXY inversos; curva directa)."
     )
 
 
-def _portfolio_html(records: list[dict]) -> str:
-    """Build the Radar table as HTML: logos, name tooltips, colored change cells."""
-    th = "padding:6px 16px 6px 0;text-align:{a};border-bottom:2px solid rgba(128,128,128,0.35);font-weight:600;"
-    td = "padding:6px 16px 6px 0;text-align:{a};border-bottom:1px solid rgba(128,128,128,0.18);"
-    num = "font-variant-numeric:tabular-nums;white-space:nowrap;"
-    cols = [
-        ("Activo", "left"), ("Tramo", "left"), ("Precio", "right"),
-        ("Cap. mercado", "right"), ("Vol. 24h", "right"),
-        ("24h", "right"), ("7d", "right"), ("30d", "right"),
-        ("Dist. ATH", "right"), ("Dilución", "right"),
-    ]
-    header = "<tr>" + "".join(f'<th style="{th.format(a=a)}">{c}</th>' for c, a in cols) + "</tr>"
-
-    body = ""
-    for r in records:
-        if r["price"] is None or pd.isna(r["price"]):
-            continue
-        logo = ""
-        if r.get("logo_url"):
-            logo = (
-                f'<img src="{html.escape(str(r["logo_url"]), quote=True)}" '
-                'width="20" height="20" loading="lazy" '
-                'style="vertical-align:middle;border-radius:50%;margin-right:6px">'
-            )
-        name = (
-            f'{logo}<span title="{html.escape(str(r.get("description", "")), quote=True)}" '
-            'style="border-bottom:1px dotted currentColor;cursor:help">'
-            f'{html.escape(str(r["symbol"]))}</span>'
-        )
-        # Dilution cell: yellow warning glyph (left of value) + hover tooltip with
-        # circulating share and next unlock. U+FE0E forces text presentation so the
-        # CSS color applies (instead of the multicolor emoji).
-        dil_val = _fmt_ratio(r["dilution_ratio"])
-        if r.get("dilution_risk"):
-            dil_val = f'<span style="color:#eab308;font-weight:700">⚠︎</span>&nbsp;{dil_val}'
-        dil_cell = (
-            f'<span title="{html.escape(_dilution_tooltip(r), quote=True)}" '
-            f'style="cursor:help">{dil_val}</span>'
-        )
-        body += (
-            "<tr>"
-            f'<td style="{td.format(a="left")}">{name}</td>'
-            f'<td style="{td.format(a="left")}">{html.escape(_fmt_tier(r["tier"]))}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_fmt_usd(r["price"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_fmt_big_usd(r["market_cap"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_fmt_big_usd(r["volume_24h"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_24h"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_7d"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_change_span(r["chg_30d"])}</td>'
-            f'<td style="{td.format(a="right")}{num}">{_change_span(r["dist_ath"], sentiment_tooltip=False)}</td>'
-            f'<td style="{td.format(a="right")}{num}">{dil_cell}</td>'
-            "</tr>"
-        )
-    return f'<table style="border-collapse:collapse;width:100%">{header}{body}</table>'
-
-
 def _section_portfolio(conn, settings) -> None:
-    """Radar: price, changes, distance to ATH, dilution flag."""
+    """Radar: interactive grid (sort / reorder / hide columns), logos, colored changes."""
     st.header("2 · Radar")
     df = portfolio_table(conn, settings)
     if df.empty or df["price"].notna().sum() == 0:
@@ -307,39 +254,126 @@ def _section_portfolio(conn, settings) -> None:
         label = "Dominancia BTC (mercado total)" if is_global else "Dominancia BTC (universo seguido)"
         st.metric(label, f"{dominance:.1f}%")
 
-    st.markdown(_portfolio_html(df.to_dict("records")), unsafe_allow_html=True)
+    rows = []
+    for r in df.to_dict("records"):
+        if r["price"] is None or pd.isna(r["price"]):
+            continue
+        dil = _fmt_ratio(r["dilution_ratio"])
+        if r.get("dilution_risk"):
+            dil = f"⚠ {dil}"
+        rows.append(
+            {
+                "Logo": r.get("logo_url") or "",
+                "Activo": r["symbol"],
+                "Tramo": _fmt_tier(r["tier"]),
+                "Precio": _fmt_usd(r["price"]),
+                "Cap. mercado": _fmt_big_usd(r["market_cap"]),
+                "Vol. 24h": _fmt_big_usd(r["volume_24h"]),
+                "24h": _fmt_change(r["chg_24h"]),
+                "7d": _fmt_change(r["chg_7d"]),
+                "30d": _fmt_change(r["chg_30d"]),
+                "Dist. ATH": _fmt_change(r["dist_ath"]),
+                "Dilución": dil,
+                "Próx. unlock": r.get("next_unlock") or "pendiente (Fase 2)",
+                "Tesis": r.get("description", ""),
+            }
+        )
+    show = pd.DataFrame(rows)
+    change_cols = ["24h", "7d", "30d", "Dist. ATH"]
+    styler = (
+        show.style
+        .map(_color_by_sign, subset=change_cols)
+        .map(_color_dilution, subset=["Dilución"])
+    )
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Activo": st.column_config.TextColumn(help="Token seguido (§5)."),
+            "Dist. ATH": st.column_config.TextColumn(help="Distancia al máximo histórico."),
+            "Dilución": st.column_config.TextColumn(
+                help="Circulante / suministro máximo. ⚠ = por debajo del umbral de dilución."
+            ),
+            "Próx. unlock": st.column_config.TextColumn(
+                help="Próximo unlock del token (calendario en Fase 2)."
+            ),
+            "Tesis": st.column_config.TextColumn(
+                width="medium", help="Tesis / métrica de invalidación (§5)."
+            ),
+        },
+    )
     st.caption(
-        "Variaciones 24h/7d/30d muestran `—` hasta acumular historial de precios. "
-        "Verde = alcista, rojo = bajista (pasa el cursor sobre 24h/7d/30d para ver la señal). "
-        "El icono ⚠︎ amarillo marca circulante/máx por debajo del umbral; pasa el cursor sobre "
-        "la dilución para ver el % circulante y el próximo unlock. Pasa el cursor sobre el "
-        "activo para ver su tesis."
+        "Tabla interactiva: arrastra para reordenar y usa el menú de columna para ordenar u "
+        "ocultar. Verde = alcista, rojo = bajista en las variaciones; ⚠ en Dilución = "
+        "circulante/máx por debajo del umbral. `Tesis` y `Próx. unlock` son ocultables. "
+        "Las variaciones muestran `—` hasta acumular historial de precios."
     )
 
 
 def _section_thesis(conn, settings) -> None:
-    """Level 3 — thesis health via TVL, grouped by thesis category."""
+    """Level 3 — thesis health. All tokens, grouped by category; interactive grid."""
     st.header("3 · Tesis — TVL por categoría")
     df = thesis_tvl_table(conn, settings)
-    if df.empty or df["tvl"].notna().sum() == 0:
-        st.info("Sin datos de TVL. Ejecuta `python run_ingest.py`.")
+    if df.empty:
+        st.info("Sin activos configurados en `settings.yaml`.")
         return
-    show = pd.DataFrame(
-        {
-            "Activo": df["symbol"],
-            "Categoría tesis": df["thesis_category"],
-            "Tipo": df["kind"],
-            "TVL": df["tvl"].map(_fmt_big_usd),
-            "TVL 7d": df["tvl_chg_7d"].map(_fmt_pct),
-            "TVL 30d": df["tvl_chg_30d"].map(_fmt_pct),
-            "MC/TVL": df["mc_tvl"].map(_fmt_ratio),
-        }
+
+    cat_notes = settings.raw.get("thesis_categories", {})
+    rows = []
+    for r in df.to_dict("records"):
+        rows.append(
+            {
+                "Logo": r.get("logo_url") or "",
+                "Activo": r["symbol"],
+                "Categoría tesis": _fmt_category(r["thesis_category"]),
+                "Tipo": _fmt_kind(r["kind"]),
+                "TVL": _fmt_big_usd(r["tvl"]),
+                "TVL 7d": _fmt_change(r["tvl_chg_7d"]),
+                "TVL 30d": _fmt_change(r["tvl_chg_30d"]),
+                "MC/TVL": _fmt_ratio(r["mc_tvl"]),
+                "Tesis": r.get("description", ""),
+                "Nota categoría": cat_notes.get(r["thesis_category"], ""),
+            }
+        )
+    show = pd.DataFrame(rows)
+    styler = show.style.map(_color_by_sign, subset=["TVL 7d", "TVL 30d"])
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Categoría tesis": st.column_config.TextColumn(
+                help="Agrupación por modo de fallo / megatendencia. Diversificar por "
+                "categoría, no por ticker (§5). Ver la columna 'Nota categoría'."
+            ),
+            "Tipo": st.column_config.TextColumn(
+                help="Origen del TVL: Protocolo = app DeFi (DefiLlama /protocol); "
+                "Cadena = L1 completa (DefiLlama /chain); — = sin TVL rastreado."
+            ),
+            "TVL": st.column_config.TextColumn(
+                help="Valor total bloqueado (DefiLlama). — para activos sin TVL "
+                "rastreado, p. ej. BTC, XRP, TAO."
+            ),
+            "MC/TVL": st.column_config.TextColumn(
+                help="Capitalización / TVL. Alto = precio caro respecto a la actividad "
+                "capturada (value accrual, §2)."
+            ),
+            "Tesis": st.column_config.TextColumn(
+                width="medium", help="Tesis / métrica de invalidación (§5)."
+            ),
+            "Nota categoría": st.column_config.TextColumn(
+                width="medium", help="Explicación breve de la categoría de tesis."
+            ),
+        },
     )
-    st.dataframe(show, hide_index=True, use_container_width=True)
     st.caption(
-        "Agrupado por *categoría de tesis*, no por ticker, para exponer concentración "
-        "disfrazada de diversificación (§5). MC/TVL alto = precio caro respecto a la "
-        "actividad capturada."
+        "Todos los activos, agrupados por *categoría de tesis* para exponer concentración "
+        "disfrazada de diversificación (§5). La tabla interactiva no admite tooltips por "
+        "celda: las explicaciones por valor van en las columnas ocultables `Tesis` y "
+        "`Nota categoría`, y en la ⓘ de cada cabecera. Verde/rojo = variación de TVL."
     )
 
 

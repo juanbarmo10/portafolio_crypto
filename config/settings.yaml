@@ -181,3 +181,19 @@ indicators:
 # --- Recurring monthly contribution (CLAUDE.md sections 1, 2 level 4) ---------
 dca:
   monthly_contribution_min_usd: 200
+
+# --- Thesis categories (CLAUDE.md section 5) ---------------------------------
+# Brief explanation per thesis category, shown in the Tesis table. Diversification
+# is by category / failure mode, not by ticker — this makes the grouping legible.
+thesis_categories:
+  store_of_value: "Reserva de valor; oro digital, sin flujo de caja propio del token."
+  l1_base: "Capa base / infraestructura de contratos inteligentes."
+  l1_high_perf: "L1 de alto rendimiento; compiten en velocidad y coste por transacción."
+  l1_enterprise: "L1 orientada a empresas e instituciones."
+  oracle_infra: "Oráculos e infraestructura que conecta datos del mundo real on-chain."
+  defi_lending: "Préstamos DeFi; captura ingresos por intereses y comisiones de protocolo."
+  dex: "Exchange descentralizado; ingresos por comisiones de trading."
+  payments: "Redes de pagos y liquidación transfronteriza."
+  rwa: "Activos del mundo real tokenizados (bonos, crédito privado)."
+  ai: "IA descentralizada; cómputo y modelos coordinados on-chain."
+  exchange: "Token de exchange; quemas ligadas al negocio del CEX (riesgo regulatorio)."

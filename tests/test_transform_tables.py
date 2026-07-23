@@ -88,6 +88,29 @@ def test_macro_table_carries_crypto_effect(conn, settings) -> None:
     assert cpi["crypto_effect"] == "inverse"
 
 
+def test_thesis_table_includes_all_assets(conn, settings) -> None:
+    # Every tracked asset appears, even those without a tracked TVL (e.g. BTC).
+    table = thesis_tvl_table(conn, settings)
+    assert len(table) == len(settings.assets)
+    btc = table[table["symbol"] == "BTC"].iloc[0]
+    assert pd.isna(btc["tvl"])  # BTC has no defillama TVL
+    assert btc["kind"] is None or pd.isna(btc["kind"])  # no TVL source
+    assert btc["logo_url"]  # meta still attached
+
+
+def test_thesis_table_grouped_by_category(conn, settings) -> None:
+    # Same-category tokens are adjacent (sorted by category).
+    cats = list(thesis_tvl_table(conn, settings)["thesis_category"])
+    # Each category forms a single contiguous run.
+    seen: set = set()
+    prev = None
+    for c in cats:
+        if c != prev:
+            assert c not in seen, f"category {c} is not contiguous"
+            seen.add(c)
+            prev = c
+
+
 def test_thesis_tvl_table_7d_change(conn, settings) -> None:
     # Aave TVL: 100 eight days ago, 110 today -> +10% over 7d.
     df = pd.DataFrame(

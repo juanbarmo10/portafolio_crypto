@@ -218,28 +218,45 @@ def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFram
 
 
 def thesis_tvl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
-    """Per-protocol/chain TVL with 7d/30d change, grouped by thesis category (level 3)."""
+    """All tracked assets with TVL where available, grouped by thesis category (level 3).
+
+    Every asset is included so the whole universe reads at a glance; assets without a
+    tracked TVL (e.g. BTC, XRP, TAO) show None for the TVL columns. Rows are sorted by
+    thesis category (and TVL descending within a category) so same-category tokens sit
+    together — exposing concentration by failure mode rather than by ticker (§5).
+    """
     rows: list[dict[str, Any]] = []
     for asset in settings.assets:
         dl = asset.get("defillama")
-        if not dl:
-            continue
-        series_id = f"{dl['slug']}:tvl"
-        hist = series_history(conn, "defillama", series_id)
-        tvl = float(hist.iloc[-1]) if not hist.dropna().empty else None
+        tvl = tvl_7d = tvl_30d = None
+        kind = None
+        if dl:
+            hist = series_history(conn, "defillama", f"{dl['slug']}:tvl")
+            tvl = float(hist.iloc[-1]) if not hist.dropna().empty else None
+            tvl_7d = pct_change_over_days(hist, 7)
+            tvl_30d = pct_change_over_days(hist, 30)
+            kind = dl["kind"]
         mcap = _val(latest_observation(conn, "coingecko", f"{asset['coingecko_id']}:market_cap"))
+        meta = settings.meta_for(asset["symbol"])
         rows.append(
             {
                 "symbol": asset["symbol"],
                 "thesis_category": asset["thesis_category"],
-                "kind": dl["kind"],
+                "kind": kind,
                 "tvl": tvl,
-                "tvl_chg_7d": pct_change_over_days(hist, 7),
-                "tvl_chg_30d": pct_change_over_days(hist, 30),
+                "tvl_chg_7d": tvl_7d,
+                "tvl_chg_30d": tvl_30d,
                 "mc_tvl": mc_tvl_ratio(mcap, tvl),
+                "logo_url": meta.get("logo_url"),
+                "description": meta.get("description", ""),
             }
         )
-    return pd.DataFrame(rows).sort_values("thesis_category") if rows else pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(
+            ["thesis_category", "tvl"], ascending=[True, False], na_position="last"
+        ).reset_index(drop=True)
+    return df
 
 
 def dca_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:

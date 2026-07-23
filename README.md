@@ -26,9 +26,11 @@ Incluye hasta ahora:
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
-- **Sincronización de cuenta Binance (solo lectura):** holdings reales + historial de
-  operaciones (precio, comisiones) para el nivel 4; nunca opera ni retira. Requiere una API key
-  **read-only** en `config/.env` (ver `.env.example`); si falta, se omite.
+- **Sincronización de cuenta Binance (solo lectura):** holdings reales (spot + funding +
+  Simple Earn, valorando WBETH por su precio propio) + historial de operaciones (precio,
+  comisiones) para el nivel 4; nunca opera ni retira. Requiere una API key **read-only** en
+  `config/.env` (ver `.env.example`); si falta, se omite. El capital no legible con key de solo
+  lectura (p. ej. grid trading bots) se registra a mano en `binance_account.manual_holdings`.
 - Dashboard Streamlit con 5 secciones (**Macro / Radar / Estructura de mercado / Tesis /
   Ejecución**): tablas interactivas (ordenar/reordenar/ocultar), colores y flechas ▲▼, logos,
   y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).

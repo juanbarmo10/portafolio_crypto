@@ -6,7 +6,9 @@ without touching the exchange.
 
 from __future__ import annotations
 
-from ingest.binance_account import TRADE_COLUMNS, parse_trades
+import pytest
+
+from ingest.binance_account import TRADE_COLUMNS, parse_earn, parse_trades
 
 
 def _ccxt_trade(**overrides) -> dict:
@@ -51,3 +53,20 @@ def test_parse_trades_handles_missing_fee() -> None:
     rows = parse_trades([_ccxt_trade(fee=None)], "binance")
     assert rows[0]["fee"] is None
     assert rows[0]["fee_currency"] is None
+
+
+# --- parse_earn (authoritative Simple Earn positions) ------------------------
+
+
+def test_parse_earn_sums_flexible_and_locked() -> None:
+    flexible = {"rows": [{"asset": "USDC", "totalAmount": "80.08"},
+                         {"asset": "BTC", "totalAmount": "0.01121"}]}
+    locked = {"rows": [{"asset": "BTC", "amount": "0.001"}]}
+    result = parse_earn(flexible, locked)
+    assert result["USDC"] == 80.08
+    assert result["BTC"] == pytest.approx(0.01221)  # flexible + locked
+
+
+def test_parse_earn_empty_and_malformed() -> None:
+    assert parse_earn({"rows": []}, {"rows": []}) == {}
+    assert parse_earn({"rows": [{"asset": "BTC"}, {"totalAmount": "1"}]}, {}) == {}

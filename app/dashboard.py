@@ -611,12 +611,15 @@ def _section_execution(conn, settings) -> None:
                 "Peso": holdings["weight_pct"].map(
                     lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
                 ),
+                "Nota": holdings["note"],
             }
         )
         st.dataframe(show, hide_index=True, width="stretch")
+        wallets = ", ".join(settings.source("binance_account").get("wallets", ["spot"]))
         st.caption(
-            "Solo lectura: el panel nunca opera ni retira (§2, §11). Comisiones materiales con "
-            "tickets de ~$17 — el registro real permite comparar contra el baseline de mantener."
+            f"Balances sumados entre wallets: **{wallets}** (config `binance_account.wallets`; "
+            "futuros off por defecto, §11). Solo lectura: el panel nunca opera ni retira (§2, §11). "
+            "El registro real de comisiones permite comparar contra el baseline de mantener."
         )
 
     # --- DCA plan (manual) ---------------------------------------------------

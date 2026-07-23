@@ -53,7 +53,14 @@ class CoinGeckoIngester(Ingester):
         self._base_url = cfg["base_url"]
         self._vs_currency = cfg.get("vs_currency", "usd")
         self._timeout = cfg.get("request_timeout_s", 20)
-        self._ids = [a["coingecko_id"] for a in settings.assets]
+        # Tracked assets + any price-alias ids (e.g. wrapped-beacon-eth) used to value
+        # held-but-untracked assets like WBETH in the level-4 holdings view.
+        alias_ids = [
+            cid
+            for cid in (settings.source("binance_account").get("price_aliases", {}) or {}).values()
+            if cid
+        ]
+        self._ids = list(dict.fromkeys([a["coingecko_id"] for a in settings.assets] + alias_ids))
 
     def _get_markets(self) -> list[dict[str, Any]]:
         """Call /coins/markets for all asset ids in one batched request."""

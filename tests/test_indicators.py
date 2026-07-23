@@ -11,6 +11,7 @@ from transform.indicators import (
     distance_to_ath,
     dilution_ratio,
     mc_tvl_ratio,
+    normalize_asset,
     pct_change_over_days,
 )
 
@@ -126,3 +127,20 @@ def test_dilution_ratio_basic() -> None:
 def test_dilution_ratio_missing_max_returns_none() -> None:
     # Uncapped tokens (max_supply None) have no defined dilution ratio.
     assert dilution_ratio(1000.0, None) is None
+
+
+# --- normalize_asset (Binance balance codes) ---------------------------------
+
+
+def test_normalize_asset() -> None:
+    aliases = {"WBETH": "ETH"}
+    priceable = {"BTC", "ETH", "USDC", "USDT"}
+    # LD-prefixed flexible-Earn tokens map to the underlying priceable asset.
+    assert normalize_asset("LDBTC", aliases, priceable) == "BTC"
+    assert normalize_asset("LDUSDC", aliases, priceable) == "USDC"
+    # Explicit alias (staking wrapper).
+    assert normalize_asset("WBETH", aliases, priceable) == "ETH"
+    # A real ticker that merely starts with 'LD' is left untouched (remainder unpriceable).
+    assert normalize_asset("LDO", aliases, priceable) == "LDO"
+    # Plain assets pass through.
+    assert normalize_asset("BTC", aliases, priceable) == "BTC"

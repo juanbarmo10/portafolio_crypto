@@ -322,46 +322,88 @@ def _val(observation: tuple[str, float] | None) -> float | None:
 STABLECOINS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
 
 
-def _usd_price(conn: sqlite3.Connection, asset: str, id_by_symbol: dict[str, str]) -> float | None:
-    """Latest USD price for an asset symbol: $1 for stablecoins, else CoinGecko."""
+def _usd_price(
+    conn: sqlite3.Connection,
+    asset: str,
+    id_by_symbol: dict[str, str],
+    price_aliases: dict[str, str] | None = None,
+) -> float | None:
+    """Latest USD price for an asset symbol.
+
+    $1 for stablecoins; else the tracked CoinGecko id; else a ``price_aliases`` id
+    (symbol -> coingecko id) for held-but-untracked assets like WBETH. None if unknown.
+    """
     if asset in STABLECOINS:
         return 1.0
-    coingecko_id = id_by_symbol.get(asset)
+    coingecko_id = id_by_symbol.get(asset) or (price_aliases or {}).get(asset)
     if not coingecko_id:
         return None
     return _val(latest_observation(conn, "coingecko", f"{coingecko_id}:price"))
 
 
-def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
-    """Real Binance holdings valued in USD (level 4). Empty if the account isn't synced.
+def normalize_asset(asset: str, aliases: dict[str, str], priceable: set[str]) -> str:
+    """Map a Binance balance code to its priceable underlying asset.
 
-    Reads the latest ``<ASSET>:balance`` per asset (source 'binance') and values it with
-    the latest CoinGecko price ($1 for stablecoins). Positions worth less than the dust
-    threshold are dropped. The total portfolio value is exposed on ``df.attrs``.
+    - Explicit ``aliases`` first (e.g. WBETH -> ETH, staking wrappers).
+    - Then strip the ``LD`` prefix of flexible-Earn tokens (LDBTC -> BTC) *only* when the
+      remainder is a known priceable asset, so real tickers like LDO are left untouched.
+    - Otherwise the code is returned unchanged.
     """
-    balances = latest_by_source(conn, "binance")  # {"BTC:balance": amount, ...}
-    if not balances:
-        return pd.DataFrame()
+    if asset in aliases:
+        return aliases[asset]
+    if asset.startswith("LD") and asset[2:] in priceable:
+        return asset[2:]
+    return asset
 
+
+def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Real Binance holdings (+ manual entries) valued in USD (level 4).
+
+    Sums wallet-suffixed ``<ASSET>:balance:<wallet>`` series per normalized asset (Earn,
+    staking wrappers, funding), values them (stablecoins $1, tracked ids, or price_aliases
+    for WBETH etc.), and appends manual holdings (capital the read-only key cannot read,
+    e.g. grid bots). Positions below the dust threshold are dropped. Empty if nothing to
+    show. Total and cash are exposed on ``df.attrs``.
+    """
     id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
-    dust = settings.source("binance_account").get("dust_threshold_usd", 1.0)
+    cfg = settings.source("binance_account")
+    dust = cfg.get("dust_threshold_usd", 1.0)
+    aliases = cfg.get("asset_aliases", {}) or {}
+    price_aliases = cfg.get("price_aliases", {}) or {}
+    priceable = set(id_by_symbol) | STABLECOINS
+
+    # Sum across wallets into one amount per *normalized* asset. Only wallet-suffixed
+    # series count, so legacy ``<ASSET>:balance`` rows don't double-count.
+    per_asset: dict[str, float] = {}
+    for series_id, amount in latest_by_source(conn, "binance").items():
+        if ":balance:" not in series_id:
+            continue
+        asset = normalize_asset(series_id.split(":")[0], aliases, priceable)
+        per_asset[asset] = per_asset.get(asset, 0.0) + amount
 
     rows: list[dict[str, Any]] = []
-    for series_id, amount in balances.items():
-        asset = series_id.split(":")[0]
-        price = _usd_price(conn, asset, id_by_symbol)
+    for asset, amount in per_asset.items():
+        price = _usd_price(conn, asset, id_by_symbol, price_aliases)
         value = None if price is None else amount * price
         if value is not None and value < dust:
             continue
-        rows.append(
-            {
-                "asset": asset,
-                "amount": amount,
-                "price_usd": price,
-                "value_usd": value,
-                "is_cash": asset in STABLECOINS,
-            }
-        )
+        rows.append(_holding_row(asset, amount, price, value, ""))
+
+    # Manual holdings (grid bots, etc.), shown with a note. Each entry is either a
+    # priced position {asset, amount} or a lump sum {label, value_usd}.
+    for entry in cfg.get("manual_holdings", []) or []:
+        note = entry.get("note", "manual")
+        if entry.get("value_usd") is not None:  # lump sum in USD
+            label = entry.get("label") or entry.get("asset") or "manual"
+            rows.append(_holding_row(label, None, None, float(entry["value_usd"]), note))
+            continue
+        asset, amount = entry.get("asset"), entry.get("amount")
+        if not asset or amount is None:
+            continue
+        price = _usd_price(conn, asset, id_by_symbol, price_aliases)
+        value = None if price is None else float(amount) * price
+        rows.append(_holding_row(asset, float(amount), price, value, note))
+
     df = pd.DataFrame(rows)
     if df.empty:
         return df
@@ -371,6 +413,20 @@ def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame
     df.attrs["total_value_usd"] = float(total) if total else 0.0
     df.attrs["cash_usd"] = float(df.loc[df["is_cash"], "value_usd"].sum(skipna=True))
     return df
+
+
+def _holding_row(
+    asset: str, amount: float, price: float | None, value: float | None, note: str
+) -> dict[str, Any]:
+    """One holdings row (real Binance or manual)."""
+    return {
+        "asset": asset,
+        "amount": amount,
+        "price_usd": price,
+        "value_usd": value,
+        "is_cash": asset in STABLECOINS,
+        "note": note,
+    }
 
 
 def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
@@ -386,6 +442,7 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
         return {"has_trades": False}
 
     id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    price_aliases = settings.source("binance_account").get("price_aliases", {}) or {}
     invested = proceeds = fees_usd = 0.0
     fees_unconverted = 0
     for side, cost, fee, fee_currency in trades:
@@ -394,7 +451,7 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
         elif side == "sell" and cost is not None:
             proceeds += cost
         if fee:
-            price = _usd_price(conn, fee_currency, id_by_symbol) if fee_currency else None
+            price = _usd_price(conn, fee_currency, id_by_symbol, price_aliases) if fee_currency else None
             if price is not None:
                 fees_usd += fee * price
             else:

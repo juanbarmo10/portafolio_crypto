@@ -51,6 +51,25 @@ sources:
     trades_since_days: 180        # how far back to pull executed trades
     dust_threshold_usd: 1.0       # ignore balances worth less than this
     request_timeout_ms: 20000
+    # Wallets to include in holdings. spot/funding/earn need only READ permission.
+    # "earn" reads Simple Earn (flexible+locked) positions directly — authoritative,
+    # unlike the LD-prefixed amounts inside spot which can be stale. LD duplicates are
+    # excluded from spot automatically (per asset present in Earn) to avoid double count.
+    # WARNING: "future"/"delivery" require "Enable Futures" (also permits trading) and
+    # contradict the no-leverage rule (§11); off by default. Spot Grid trading bots are
+    # NOT readable with a read-only key (Binance requires the trading permission) — use
+    # manual_holdings below for that capital.
+    wallets: ["spot", "funding", "earn"]
+    # Price non-tracked held assets by their CoinGecko id (symbol -> id). WBETH is
+    # liquid-staked ETH and trades ABOVE ETH (accrued rewards), so price it directly,
+    # not as ETH. The coingecko ingester fetches these ids too.
+    price_aliases:
+      WBETH: wrapped-beacon-eth
+    # Capital the READ-ONLY key cannot see (e.g. Spot Grid trading bots). Recorded by
+    # hand; update when you start/stop a bot. Each entry is either a priced position
+    # {asset, amount, note} or a lump sum {label, value_usd, note}.
+    manual_holdings:
+      - {label: "Trading bots", value_usd: 200, note: "spot grid bots (no legible con key read-only)"}
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20

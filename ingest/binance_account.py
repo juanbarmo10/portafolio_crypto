@@ -38,6 +38,36 @@ TRADE_COLUMNS = [
     "price", "amount", "cost", "fee", "fee_currency",
 ]
 
+# Wallet name -> ccxt fetch_balance 'type' param. "earn" is special (Simple Earn
+# positions via sapi); the rest go through fetch_balance.
+_WALLET_TYPE = {
+    "spot": "spot",
+    "funding": "funding",
+    "future": "future",      # USD-M; needs "Enable Futures" permission (a trading perm)
+    "delivery": "delivery",  # COIN-M; same caveat
+    "margin": "margin",
+}
+
+
+def parse_earn(flexible: object, locked: object) -> dict[str, float]:
+    """Sum Simple Earn (flexible + locked) positions per asset. Pure, testable.
+
+    Binance returns ``{"rows": [{"asset": ..., "totalAmount"/"amount": ...}], ...}``.
+    Flexible rows expose ``totalAmount``; locked rows expose ``amount``. This is the
+    authoritative source for Earn (the LD-prefixed amounts inside the spot balance can
+    be stale). Rows missing an asset or amount are skipped.
+    """
+    out: dict[str, float] = {}
+    for payload in (flexible, locked):
+        rows = payload.get("rows", []) if isinstance(payload, dict) else (payload or [])
+        for row in rows:
+            asset = row.get("asset")
+            amount = _as_float(row.get("totalAmount", row.get("amount")))
+            if not asset or amount is None:
+                continue
+            out[asset] = out.get(asset, 0.0) + amount
+    return out
+
 
 def parse_trades(raw_trades: list[dict], exchange: str) -> list[dict[str, Any]]:
     """Convert ccxt trade dicts to trades-table rows. Pure (no network), testable.
@@ -102,6 +132,7 @@ class BinanceAccountIngester(Ingester):
         self._quote: str = cfg.get("quote", "USDT")
         self._trades_since_days: int = int(cfg.get("trades_since_days", 180))
         self._timeout: int = int(cfg.get("request_timeout_ms", 20000))
+        self._wallets: list[str] = cfg.get("wallets", ["spot", "funding", "earn"])
         self._tracked: list[str] = [a["symbol"] for a in settings.assets]
 
         api_key = settings.secrets.get("BINANCE_API_KEY")
@@ -115,25 +146,77 @@ class BinanceAccountIngester(Ingester):
         )
         self._balances: dict[str, float] = {}
 
-    def fetch(self) -> pd.DataFrame:
-        """Return current holdings (total balance per asset) as observations."""
-        balance = retry(self._exchange.fetch_balance, exceptions=(ccxt.NetworkError,))
-        totals = balance.get("total", {}) or {}
-        self._balances = {a: float(v) for a, v in totals.items() if v}  # cache for fetch_trades
+    def _earn_balances(self) -> dict[str, float]:
+        """Simple Earn (flexible + locked) positions per asset — authoritative source."""
+        flexible = retry(
+            lambda: self._exchange.sapiGetSimpleEarnFlexiblePosition({"size": 100}),
+            exceptions=(ccxt.NetworkError,),
+        )
+        locked = retry(
+            lambda: self._exchange.sapiGetSimpleEarnLockedPosition({"size": 100}),
+            exceptions=(ccxt.NetworkError,),
+        )
+        return parse_earn(flexible, locked)
 
+    def _wallet_balances(self, wallet: str) -> dict[str, float]:
+        """Return {asset: amount} for one wallet. 'earn' uses the Simple Earn endpoint."""
+        if wallet == "earn":
+            return self._earn_balances()
+        params = {} if wallet == "spot" else {"type": _WALLET_TYPE[wallet]}
+        balance = retry(
+            lambda: self._exchange.fetch_balance(params), exceptions=(ccxt.NetworkError,)
+        )
+        return {a: float(v) for a, v in (balance.get("total") or {}).items() if v}
+
+    def fetch(self) -> pd.DataFrame:
+        """Return holdings per (asset, wallet) as observations, across configured wallets.
+
+        series_id = "<ASSET>:balance:<wallet>". Earn is read from the authoritative Simple
+        Earn endpoint; the matching LD-prefixed duplicates (LDBTC for BTC in Earn, ...) are
+        then excluded from the spot balance to avoid double-counting. A wallet that is
+        unknown or not accessible is logged and skipped — never aborts the run. Per-asset
+        totals are cached for trade-symbol discovery.
+        """
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
-        rows = [
-            {
-                "source": self.source,
-                "series_id": f"{asset}:balance",
-                "ts": ts,
-                "ts_release": None,
-                "value": amount,
-            }
-            for asset, amount in self._balances.items()
-        ]
+        self._balances = {}
+        rows: list[dict[str, Any]] = []
+
+        # Fetch Earn first (if configured) so we can drop the LD-duplicates from spot.
+        earn_balances: dict[str, float] = {}
+        if "earn" in self._wallets:
+            try:
+                earn_balances = self._earn_balances()
+            except Exception:  # noqa: BLE001 — fall back to spot LD* if Earn is unreachable
+                log.exception("Binance: Simple Earn not accessible; spot LD* used as fallback.")
+        ld_duplicates = {f"LD{asset}" for asset in earn_balances}
+
+        for wallet in self._wallets:
+            if wallet != "earn" and wallet not in _WALLET_TYPE:
+                log.warning("Binance: unknown wallet '%s' in config; skipping.", wallet)
+                continue
+            try:
+                balances = earn_balances if wallet == "earn" else self._wallet_balances(wallet)
+            except Exception:  # noqa: BLE001 — a wallet may lack permission; isolate it
+                log.exception("Binance: wallet '%s' not accessible; skipping.", wallet)
+                continue
+            for asset, amount in balances.items():
+                if not amount:
+                    continue
+                if wallet == "spot" and asset in ld_duplicates:
+                    continue  # captured accurately via the Earn endpoint
+                self._balances[asset] = self._balances.get(asset, 0.0) + amount
+                rows.append(
+                    {
+                        "source": self.source,
+                        "series_id": f"{asset}:balance:{wallet}",
+                        "ts": ts,
+                        "ts_release": None,
+                        "value": amount,
+                    }
+                )
+            log.info("Binance wallet '%s': %d assets with balance.", wallet, len(balances))
+
         df = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
-        log.info("Binance holdings: %d assets with a non-zero balance.", len(df))
         return self.validate(df)
 
     def fetch_trades(self) -> pd.DataFrame:

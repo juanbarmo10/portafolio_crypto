@@ -26,9 +26,15 @@ from transform.indicators import (
 
 @pytest.fixture()
 def settings():
-    """The real settings object (asset universe drives the table builders)."""
+    """The real settings object (asset universe drives the table builders).
+
+    manual_holdings is reset to empty so tests are isolated from any real entry
+    (e.g. trading-bot capital) configured in settings.yaml; tests that need it set
+    it explicitly.
+    """
     load_settings.cache_clear()
     s = load_settings()
+    s.raw.get("sources", {}).get("binance_account", {})["manual_holdings"] = []
     yield s
     load_settings.cache_clear()
 
@@ -184,8 +190,8 @@ def test_holdings_table_values_and_weights(conn, settings) -> None:
         pd.DataFrame(
             [
                 _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
-                _obs("BTC:balance", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
-                _obs("USDT:balance", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
             ]
         ),
     )
@@ -195,6 +201,88 @@ def test_holdings_table_values_and_weights(conn, settings) -> None:
     btc = table[table["asset"] == "BTC"].iloc[0]
     assert btc["value_usd"] == pytest.approx(1300.0)
     assert btc["weight_pct"] == pytest.approx(1300.0 / 1800.0 * 100)
+
+
+def test_holdings_table_decodes_earn_and_prices_wbeth(conn, settings) -> None:
+    # BTC + flexible-Earn LDBTC merge to BTC; WBETH is priced via its own CoinGecko id
+    # (wrapped-beacon-eth = $2071), NOT as ETH.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("wrapped-beacon-eth:price", "2026-07-23T00:00:00+00:00", 2071.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.01, source="binance"),
+                _obs("LDBTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.01, source="binance"),
+                _obs("WBETH:balance:spot", "2026-07-23T00:00:00+00:00", 0.05, source="binance"),
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    btc = table[table["asset"] == "BTC"].iloc[0]
+    assert btc["amount"] == pytest.approx(0.02)          # BTC + LDBTC merged
+    assert btc["value_usd"] == pytest.approx(1300.0)
+    wbeth = table[table["asset"] == "WBETH"].iloc[0]     # priced at its own value
+    assert wbeth["value_usd"] == pytest.approx(0.05 * 2071.0)
+
+
+def test_holdings_table_manual_entries(conn, settings) -> None:
+    # Capital the read-only key can't read (grid bots) recorded manually.
+    settings.raw["sources"]["binance_account"]["manual_holdings"] = [
+        {"asset": "BTC", "amount": 0.002, "note": "grid bot"},
+        {"asset": "USDT", "amount": 70, "note": "grid bot"},
+    ]
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 100.0, source="binance"),
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    manual = table[table["note"] == "grid bot"]
+    assert set(manual["asset"]) == {"BTC", "USDT"}
+    btc_bot = manual[manual["asset"] == "BTC"].iloc[0]
+    assert btc_bot["value_usd"] == pytest.approx(130.0)   # 0.002 * 65000
+    # Manual value is included in the total (100 USDT spot + 130 BTC bot + 70 USDT bot).
+    assert table.attrs["total_value_usd"] == pytest.approx(300.0)
+
+
+def test_holdings_table_manual_lump_sum(conn, settings) -> None:
+    # A lump-sum USD entry (no per-asset amount), e.g. trading-bot capital.
+    settings.raw["sources"]["binance_account"]["manual_holdings"] = [
+        {"label": "Trading bots", "value_usd": 200, "note": "grid bots"}
+    ]
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [_obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 100.0, source="binance")]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    bots = table[table["asset"] == "Trading bots"].iloc[0]
+    assert bots["value_usd"] == pytest.approx(200.0)
+    assert bots["note"] == "grid bots"
+    assert table.attrs["total_value_usd"] == pytest.approx(300.0)  # 100 spot + 200 bots
+
+
+def test_holdings_table_ignores_legacy_unsuffixed_series(conn, settings) -> None:
+    # Old <ASSET>:balance rows (pre multi-wallet) must not double-count.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("BTC:balance", "2026-07-23T00:00:00+00:00", 0.5, source="binance"),   # legacy
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+            ]
+        ),
+    )
+    btc = holdings_table(conn, settings)
+    row = btc[btc["asset"] == "BTC"].iloc[0]
+    assert row["amount"] == pytest.approx(0.02)  # legacy 0.5 ignored
 
 
 def test_holdings_table_empty_without_sync(conn, settings) -> None:
@@ -208,8 +296,8 @@ def test_holdings_table_drops_dust(conn, settings) -> None:
         pd.DataFrame(
             [
                 _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
-                _obs("BTC:balance", "2026-07-23T00:00:00+00:00", 0.00001, source="binance"),
-                _obs("USDT:balance", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.00001, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
             ]
         ),
     )

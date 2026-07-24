@@ -6,8 +6,9 @@ derivados y los presenta en Streamlit, con alertas por Telegram y un framework d
 validación estadística de señales.
 
 El contexto completo del proyecto (filosofía de diseño, activos, tesis, hoja de ruta
-por fases y trampas del dominio) vive en [CLAUDE.md](CLAUDE.md). Las **decisiones técnicas
-y ecuaciones** (formulación, efecto en cripto, uso y qué validar) están en [RESEARCH.md](RESEARCH.md).
+por fases y trampas del dominio) y las **decisiones técnicas y ecuaciones** (formulación,
+efecto en cripto, uso y qué validar) se documentan en archivos de diseño internos, fuera del
+repositorio público.
 
 ## Ejecutar el proyecto (resumen)
 
@@ -40,7 +41,7 @@ pytest && ruff check .
 
 ## Estado
 
-**Fases 0-3 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.
+**Fases 0-3 completadas; Fase 4 (producción) en curso.**
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -95,8 +96,7 @@ cp config/.env.example config/.env
 ```
 
 Los secretos van solo en `config/.env` (ignorado por git). El resto de la configuración
-—activos, umbrales, ventanas, IDs— vive en `config/settings.yaml`. Nada se hardcodea en
-código (ver [CLAUDE.md](CLAUDE.md) §10).
+—activos, umbrales, ventanas, IDs— vive en `config/settings.yaml`. Nada se hardcodea en código.
 
 > **IDs de activos:** cada `coingecko_id` / `defillama` en `settings.yaml` está marcado
 > `verified: false`. Confirmar cada ID contra la API en vivo antes de confiar en un

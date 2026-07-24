@@ -37,3 +37,7 @@ streamlit_run.log
 .idea/
 .vscode/
 *.swp
+
+# Internal design docs (personal context) — not for the public repo
+CLAUDE.md
+RESEARCH.md

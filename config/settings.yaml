@@ -11,6 +11,11 @@ database:
   # Path is relative to the repo root; resolved by core.config. Never hardcoded in code.
   path: "cryptodash.db"
 
+app:
+  # Public/demo deploys must hide the real account (level 4). Overridable at runtime with
+  # the PUBLIC_MODE env var (1/true), which is how a hosted instance turns it on.
+  public_mode: false
+
 logging:
   # Overridable at runtime via LOG_LEVEL env var (see core.logging_setup).
   level: "INFO"

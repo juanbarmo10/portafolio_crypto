@@ -50,6 +50,7 @@ class Settings:
     log_level: str
     secrets: dict[str, str] = field(default_factory=dict)
     asset_meta: dict[str, Any] = field(default_factory=dict)
+    public_mode: bool = False  # hide the real account (level 4) for public deploys
 
     @property
     def assets(self) -> list[dict[str, Any]]:
@@ -104,6 +105,14 @@ def load_settings() -> Settings:
 
     log_level = os.getenv("LOG_LEVEL") or raw.get("logging", {}).get("level", "INFO")
 
+    # Public/demo mode hides the real account section (level 4). Env var wins so a
+    # deployed instance can set it without editing config.
+    env_public = os.getenv("PUBLIC_MODE")
+    if env_public is not None:
+        public_mode = env_public.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        public_mode = bool(raw.get("app", {}).get("public_mode", False))
+
     secrets = {
         key: os.environ[key]
         for key in (
@@ -122,4 +131,5 @@ def load_settings() -> Settings:
         log_level=str(log_level).upper(),
         secrets=secrets,
         asset_meta=asset_meta,
+        public_mode=public_mode,
     )

@@ -661,8 +661,16 @@ def main() -> None:
         _section_market_structure(conn, settings)
         st.divider()
         _section_thesis(conn, settings)
-        st.divider()
-        _section_execution(conn, settings)
+        # Level 4 exposes the real Binance account — never on a public deploy.
+        if settings.public_mode:
+            st.divider()
+            st.caption(
+                "🔒 Vista pública: la sección de cartera real (nivel 4) está oculta. "
+                "Ejecuta el panel localmente para el seguimiento de la cuenta."
+            )
+        else:
+            st.divider()
+            _section_execution(conn, settings)
     finally:
         conn.close()
 

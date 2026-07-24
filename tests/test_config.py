@@ -31,3 +31,15 @@ def test_log_level_env_override(monkeypatch) -> None:
     settings = load_settings()
     assert settings.log_level == "DEBUG"
     load_settings.cache_clear()
+
+
+def test_public_mode_defaults_false_and_env_override(monkeypatch) -> None:
+    """public_mode is False by default; PUBLIC_MODE env var turns it on."""
+    monkeypatch.delenv("PUBLIC_MODE", raising=False)
+    load_settings.cache_clear()
+    assert load_settings().public_mode is False
+
+    monkeypatch.setenv("PUBLIC_MODE", "1")
+    load_settings.cache_clear()
+    assert load_settings().public_mode is True
+    load_settings.cache_clear()

@@ -160,9 +160,55 @@ al crecer el historial.)*
 ## Tests
 
 ```bash
-pytest            # suite completa (113)
+pytest            # suite completa (120)
 ruff check .      # linting
 ```
+
+## Inspeccionar la base de datos
+
+### SQLite (local — incluye la cuenta real)
+
+```bash
+# Usa la ruta que resuelve la raíz del repo: sqlite3 CREA un fichero vacío si no la
+# encuentra (estar en otra carpeta = "no such table: observations").
+sqlite3 "$(git -C . rev-parse --show-toplevel)/cryptodash.db"
+```
+
+Dentro del prompt `sqlite>`:
+
+```sql
+.headers on
+.mode column
+.tables                                                 -- observations, trades, events, dca_plan, exit_rules, alerts_log
+SELECT source, COUNT(*) FROM observations GROUP BY source;
+SELECT source, series_id, ts, value FROM observations ORDER BY ts DESC LIMIT 20;
+SELECT * FROM trades ORDER BY ts DESC LIMIT 10;         -- operaciones reales (solo local)
+SELECT * FROM alerts_log ORDER BY fired_at DESC LIMIT 10;
+.quit
+```
+
+### Neon (Postgres — datos públicos, sin cuenta)
+
+- **Web (recomendado):** Neon Console → tu proyecto → **SQL Editor** / **Tables**. Cero instalación.
+- **Terminal** (`psycopg` viene con el extra `.[postgres]`):
+
+```bash
+DATABASE_URL="postgresql://…neon…?sslmode=require" python - <<'PY'
+from pathlib import Path
+from db.database import open_connection
+c = open_connection(Path("cryptodash.db"))      # DATABASE_URL presente -> usa Neon
+print("tablas:", [r[0] for r in c.execute(
+    "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")])
+print("observations:", c.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
+print("holdings (debe ser 0):", c.execute(
+    "SELECT COUNT(*) FROM observations WHERE series_id LIKE '%:balance%'").fetchone()[0])
+print("trades   (debe ser 0):", c.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
+c.close()
+PY
+```
+
+- Conserva `?sslmode=require`. `holdings` y `trades` deben dar **0**: la ingesta a Neon usa
+  `run_ingest.py --public` y **nunca** sube la cuenta de Binance (§ seguridad).
 
 ## Estructura
 

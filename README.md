@@ -131,6 +131,47 @@ python run_validation.py --z 1.5 --horizon 7
 `run_ingest.py` es idempotente: ejecutarlo dos veces no duplica filas. El panel es
 *pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, §2).
 
+## Rutina diaria (mantener la DB al día)
+
+Con los timers de systemd instalados (ver `deploy/README.md`), **no tienes que ejecutar nada
+a mano**. Dos timers corren solos cada día:
+
+- `cryptodash.timer` (13:04) → ingesta **local** a SQLite **con** tu cuenta real de Binance.
+- `cryptodash-neon.timer` (13:34) → sube **solo datos públicos** a Neon (`run_ingest.py --public`);
+  es lo que lee la app pública.
+
+`Persistent=true` + `loginctl enable-linger` significan que **basta con encender el PC al menos
+una vez cada día o dos**: si el equipo estaba apagado a la hora del timer, la ejecución perdida se
+recupera en el siguiente arranque. No hace falta tenerlo encendido 24/7 ni a una hora fija.
+
+> **Tu única tarea recurrente:** encender el PC cada 1-2 días. El resto es automático.
+> (Los cambios de precio 24h/7d/30d y el `OI 30d` necesitan acumular historial: se rellenan solos
+> conforme el timer corre varios días — no es un fallo, ver §12 y las notas de datos.)
+
+### Comprobar que corrió
+
+```bash
+systemctl --user list-timers 'cryptodash*'    # próxima ejecución y última pasada (LAST/PASSED)
+tail -n 20 logs/daily.log                      # ingesta local — busca "... 0 failed"
+tail -n 20 logs/neon_sync.log                  # sync a Neon  — busca "... 0 failed"
+```
+
+### Forzar una actualización ahora (opcional)
+
+Si quieres datos frescos sin esperar al timer (o el PC estuvo apagado y no quieres esperar al
+catch-up), dispara los servicios a mano. Usa `systemctl start` (no `source`): el
+`DATABASE_URL` de Neon lleva un `&` que rompe el `source` de bash, pero systemd lee el
+`EnvironmentFile` de forma literal y correcta.
+
+```bash
+systemctl --user start cryptodash.service        # ingesta local (SQLite, con cuenta)
+systemctl --user start cryptodash-neon.service   # sync público a Neon (lo que ve la app)
+```
+
+Sin timers instalados, el equivalente manual es `./run_daily.sh` (local) y, para Neon,
+`DATABASE_URL='postgresql://…neon…' ./run_neon_sync.sh` (pasa la URL en la misma línea para
+evitar el problema del `&` al sourcear).
+
 ## Validación de señales (resultado preliminar)
 
 > Documentar los resultados de validación **incluidos los que no funcionan** es parte del

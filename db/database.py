@@ -66,14 +66,13 @@ class _PgConnection:
         cur.executemany(_translate(sql, named), seq)
 
     def executescript(self, script: str) -> None:
-        # Postgres has no executescript: run each statement, dropping comment lines and
-        # skipping SQLite-only PRAGMA. Comment stripping matters because the schema file
-        # opens with comments before the PRAGMA.
-        for raw in script.split(";"):
-            code = "\n".join(
-                line for line in raw.splitlines()
-                if line.strip() and not line.strip().startswith("--")
-            ).strip()
+        # Postgres has no executescript: run each statement. Strip line comments (-- to
+        # end of line) FIRST — a ';' inside a comment (e.g. "ledger; used to...") would
+        # otherwise split a statement in two. Then skip SQLite-only PRAGMA. (The schema
+        # has no '--' inside string literals, so this comment removal is safe.)
+        no_comments = "\n".join(line.split("--", 1)[0] for line in script.splitlines())
+        for raw in no_comments.split(";"):
+            code = raw.strip()
             if not code or code.upper().startswith("PRAGMA"):
                 continue
             self._conn.cursor().execute(code)

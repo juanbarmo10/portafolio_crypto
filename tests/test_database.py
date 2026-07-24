@@ -66,7 +66,9 @@ def test_pg_executescript_applies_schema_skipping_pragma() -> None:
     for table in ("observations", "events", "alerts_log", "dca_plan", "exit_rules", "trades"):
         assert table in joined
     assert "PRAGMA" not in joined.upper()  # SQLite-only, skipped
-    # Full comment lines are stripped; inline "-- ..." after code stays (valid line
-    # comment in Postgres). No statement should be *only* a comment.
+    # Comments are stripped entirely, so no comment text (or a ';' inside a comment,
+    # e.g. "ledger; used to suppress...") can leak into an executed statement.
+    assert "--" not in joined
+    assert "suppress" not in joined
     for stmt in fake.executed:
-        assert not stmt.lstrip().startswith("--")
+        assert stmt.strip().upper().startswith(("CREATE", "INSERT", "ALTER", "DROP"))

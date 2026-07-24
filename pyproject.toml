@@ -64,3 +64,9 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+# dashboard.py inserts the repo root into sys.path before importing project
+# packages (needed on Streamlit Cloud, which does not install the package).
+# That forces project imports below module top -> E402 is expected here.
+"app/dashboard.py" = ["E402"]

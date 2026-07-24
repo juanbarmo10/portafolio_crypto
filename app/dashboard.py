@@ -20,7 +20,15 @@ Writes: nothing.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
+
+# Make the repo root importable when run as a bare script (e.g. Streamlit Cloud,
+# which puts app/ on sys.path but not the project root, and does not install the
+# package). Locally the editable install already covers this; the insert is a no-op.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import pandas as pd
 import streamlit as st

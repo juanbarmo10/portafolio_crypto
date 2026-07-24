@@ -35,11 +35,16 @@ from ingest.fred import FredIngester
 log = get_logger(__name__)
 
 
-def build_ingesters(settings: Settings) -> list[Ingester]:
+def build_ingesters(settings: Settings, public: bool = False) -> list[Ingester]:
     """Instantiate the registered ingesters, skipping any that cannot run.
 
     FRED needs FRED_API_KEY; if it is absent that ingester is skipped with a
     warning rather than aborting the whole run (CoinGecko and DefiLlama need no key).
+
+    Args:
+        public: When True the private **Binance account** sync is skipped, so a
+            shared/cloud database (e.g. Neon feeding a public dashboard) never receives
+            your real holdings/trades. Public market data only.
     """
     ingesters: list[Ingester] = [
         CoinGeckoIngester(settings),
@@ -51,11 +56,14 @@ def build_ingesters(settings: Settings) -> list[Ingester]:
         ingesters.append(FredIngester(settings))
     except RuntimeError as exc:
         log.warning("Skipping FRED ingester: %s", exc)
-    # Read-only Binance account sync (holdings + trades); needs API keys.
-    try:
-        ingesters.append(BinanceAccountIngester(settings))
-    except RuntimeError as exc:
-        log.warning("Skipping Binance account ingester: %s", exc)
+    if public:
+        log.info("Public ingest: skipping the Binance account sync (no private holdings).")
+    else:
+        # Read-only Binance account sync (holdings + trades); needs API keys.
+        try:
+            ingesters.append(BinanceAccountIngester(settings))
+        except RuntimeError as exc:
+            log.warning("Skipping Binance account ingester: %s", exc)
     return ingesters
 
 
@@ -66,6 +74,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Create/verify the DB and config, but run no ingesters.",
+    )
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Public market data only: skip the private Binance account sync "
+        "(use when writing to a shared/cloud DB feeding a public dashboard).",
     )
     return parser.parse_args(argv)
 
@@ -101,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
         total = 0
         failures = 0
-        for ingester in build_ingesters(settings):
+        for ingester in build_ingesters(settings, public=args.public):
             name = type(ingester).__name__
             try:
                 df = ingester.fetch()

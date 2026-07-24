@@ -22,6 +22,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.logging_setup import get_logger
+from db.database import open_connection
 
 log = get_logger(__name__)
 
@@ -45,20 +46,17 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    """Open a SQLite connection with foreign keys enabled.
+def connect(db_path: Path):
+    """Open the backend connection: PostgreSQL if DATABASE_URL is set, else SQLite.
 
     Args:
-        db_path: Destination database file. Parent directories are created.
+        db_path: SQLite destination file (used only in the SQLite fallback).
 
     Returns:
-        An open connection. The caller is responsible for closing it (or use
-        it as a context manager for transaction handling).
+        An open connection with the sqlite3 interface (native sqlite3, or the Postgres
+        facade from db.database). The caller closes it (or uses it as a context manager).
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    return open_connection(db_path)
 
 
 def apply_schema(conn: sqlite3.Connection) -> None:

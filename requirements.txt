@@ -1,0 +1,10 @@
+# Dependencies for the DEPLOYED (read-only) dashboard on Streamlit Community Cloud.
+# The cloud app only reads a PostgreSQL DB and renders — it does not ingest — so this is
+# intentionally minimal (no ccxt / requests / lxml). Local dev uses pyproject extras
+# instead: pip install -e ".[dev,app,markets,postgres]".
+streamlit>=1.30
+pandas>=2.1
+numpy>=1.26
+pyyaml>=6.0
+python-dotenv>=1.0
+psycopg[binary]>=3.1

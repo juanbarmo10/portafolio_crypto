@@ -1,0 +1,9 @@
+# Streamlit configuration (used by the deployed app and local runs).
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"

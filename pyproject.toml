@@ -32,6 +32,10 @@ markets = [
 app = [
     "streamlit>=1.30",
 ]
+# PostgreSQL backend (phase 4: cloud deploy / hosted DB via DATABASE_URL).
+postgres = [
+    "psycopg[binary]>=3.1",
+]
 # Development tooling.
 dev = [
     "pytest>=8.0",

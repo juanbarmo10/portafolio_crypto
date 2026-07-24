@@ -19,6 +19,7 @@ Writes: nothing.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -646,6 +647,14 @@ def _section_execution(conn, settings) -> None:
 def main() -> None:
     """Entry point for `streamlit run app/dashboard.py`."""
     st.set_page_config(page_title="Portafolio Crypto - Panel", layout="wide")
+    # Streamlit Cloud: expose secrets (DATABASE_URL, PUBLIC_MODE, ...) as env vars so
+    # core.config picks them up. No-op locally when there is no secrets file.
+    try:
+        for key, value in st.secrets.items():
+            if isinstance(value, str):
+                os.environ.setdefault(key, value)
+    except Exception:  # noqa: BLE001 — st.secrets raises if no secrets configured
+        pass
     settings = load_settings()
     conn = init_db(settings.db_path)
     try:

@@ -44,9 +44,49 @@ crontab -e
 0 13 * * * /home/juanb/Research_Lab/projects/portafolio_crypto/run_daily.sh
 ```
 
-## Nube (sin PC encendido) — pendiente
+## Despliegue del dashboard (Streamlit Community Cloud + Neon)
 
-La única forma de correr con el PC apagado es un runner en la nube (GitHub Actions, gratis):
-requiere subir el repo a GitHub y configurar secretos. **No** poner claves de cuenta de Binance en
-un runner alojado (§ seguridad); allí solo ingesta pública + alertas, o una DB gestionada. Se
-aborda en el paso de despliegue de la Fase 4.
+Arquitectura: tu **cron local** escribe datos **públicos** en una **Postgres gestionada (Neon)**;
+la app en **Streamlit Community Cloud** lee esa DB en modo público (sin la cartera real). El backend
+se elige solo con la variable `DATABASE_URL` (si está → Postgres; si no → SQLite local).
+
+> **Privacidad:** la cartera de Binance **nunca** sale de tu máquina. La ingesta hacia Neon usa
+> `run_ingest.py --public` (omite la cuenta), y la app usa `PUBLIC_MODE=1` (oculta el nivel 4).
+
+### 1. Base de datos gestionada (Neon, gratis)
+Crea un proyecto en [neon.tech], copia la cadena de conexión (`postgresql://...`). Esa es tu
+`DATABASE_URL`.
+
+### 2. Poblar Neon con datos públicos (desde tu máquina)
+```bash
+pip install -e ".[markets,postgres]"
+DATABASE_URL="postgresql://...neon..." python run_ingest.py --public   # crea esquema + puebla
+```
+Para mantenerla al día, añade un timer/cron que ejecute lo anterior a diario (igual que
+`cryptodash.timer`, pero con `DATABASE_URL` en el entorno del servicio y `--public`).
+
+### 3. Subir el repo a GitHub
+```bash
+git remote add origin git@github.com:<usuario>/portafolio_crypto.git
+git push -u origin main
+```
+`.env`, `*.db` y `logs/` están en `.gitignore` — no se suben secretos ni datos.
+
+### 4. App en Streamlit Community Cloud
+- [share.streamlit.io] → *New app* → tu repo, rama, archivo `app/dashboard.py`.
+- Dependencias: usa `requirements.txt` (mínimo, solo lectura).
+- **Secrets** (⚙️ → Secrets), formato TOML:
+  ```toml
+  DATABASE_URL = "postgresql://...neon..."
+  PUBLIC_MODE = "1"
+  ```
+  El dashboard expone los secrets como variables de entorno, así que `core.config` los recoge.
+
+Resultado: un enlace público que muestra Macro / Radar / Estructura de mercado / Tesis (sin la
+cartera real), con los datos que tu cron sube a Neon.
+
+## Nube total (cron también sin tu PC) — opcional
+
+Para que la **ingesta pública** corra sin tu equipo, un workflow de **GitHub Actions** (cron gratis)
+puede ejecutar `run_ingest.py --public` contra Neon con `DATABASE_URL` como *secret* del repo.
+**Nunca** pongas claves de cuenta de Binance en un runner alojado (§ seguridad).

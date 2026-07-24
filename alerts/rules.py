@@ -199,9 +199,10 @@ def dispatch_alerts(conn: sqlite3.Connection, settings: Settings, sender: Any) -
             continue
         delivered = sender.send(alert.message)
         with conn:
+            # ON CONFLICT DO NOTHING is portable across SQLite and PostgreSQL.
             conn.execute(
-                "INSERT OR IGNORE INTO alerts_log (alert_id, rule_id, fired_at, payload) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO alerts_log (alert_id, rule_id, fired_at, payload) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(alert_id) DO NOTHING",
                 (alert.dedup_key, alert.rule_id, now, f"delivered={delivered}"),
             )
         sent += 1

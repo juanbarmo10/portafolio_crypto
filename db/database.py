@@ -46,6 +46,11 @@ class _PgCursor:
     def fetchall(self) -> list[Any]:
         return self._cur.fetchall()
 
+    def __iter__(self):
+        # sqlite3 cursors are iterable (row-by-row); mirror that for parity so
+        # `for row in conn.execute(...)` works on both backends.
+        return iter(self._cur)
+
 
 class _PgConnection:
     """Minimal sqlite3-like facade over a psycopg connection."""

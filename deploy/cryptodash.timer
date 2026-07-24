@@ -1,0 +1,12 @@
+[Unit]
+Description=Run cryptodash daily (ingest + alerts)
+
+[Timer]
+# Once a day at 13:00 local time. Persistent=true catches up a missed run the next
+# time the machine is on, so the PC need not stay powered 24/7.
+OnCalendar=*-*-* 13:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

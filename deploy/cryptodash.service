@@ -1,0 +1,8 @@
+[Unit]
+Description=cryptodash daily ingest + alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/juanb/Research_Lab/projects/portafolio_crypto/run_daily.sh

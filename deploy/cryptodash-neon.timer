@@ -1,0 +1,12 @@
+[Unit]
+Description=Run cryptodash Neon public sync daily
+
+[Timer]
+# 30 min after the local run (13:00), so they don't overlap. Persistent=true catches up
+# a missed run when the machine is next on.
+OnCalendar=*-*-* 13:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

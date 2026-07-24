@@ -1,0 +1,11 @@
+[Unit]
+Description=cryptodash Neon public sync (public market data only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# DATABASE_URL lives here (not in the repo, not in config/.env). The leading '-' makes
+# the file optional so the unit loads even before you create it.
+EnvironmentFile=-%h/.config/cryptodash/neon.env
+ExecStart=/home/juanb/Research_Lab/projects/portafolio_crypto/run_neon_sync.sh

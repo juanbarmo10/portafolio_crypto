@@ -85,6 +85,27 @@ git push -u origin main
 Resultado: un enlace público que muestra Macro / Radar / Estructura de mercado / Tesis (sin la
 cartera real), con los datos que tu cron sube a Neon.
 
+### 5. Mantener Neon al día (timer diario)
+
+Un timer aparte sube **solo datos públicos** a Neon cada día (`run_ingest.py --public`),
+separado del `cryptodash.timer` local (que sigue en SQLite con la cuenta real). El
+`DATABASE_URL` vive fuera del repo, en `~/.config/cryptodash/neon.env` (chmod 600).
+
+```bash
+# 1) Pega tu cadena de conexión de Neon (con ?sslmode=require):
+$EDITOR ~/.config/cryptodash/neon.env          # DATABASE_URL=postgresql://...neon...
+# 2) Instalar/activar (si no se hizo ya):
+cp deploy/cryptodash-neon.service deploy/cryptodash-neon.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cryptodash-neon.timer
+# 3) Probar ahora:
+systemctl --user start cryptodash-neon.service
+tail -f logs/neon_sync.log                       # debe decir "Ingest complete ... 0 failed"
+```
+
+Si `DATABASE_URL` está vacío el servicio **se salta con aviso** (no escribe en SQLite).
+Ver próximos disparos: `systemctl --user list-timers 'cryptodash*'`.
+
 ## Nube total (cron también sin tu PC) — opcional
 
 Para que la **ingesta pública** corra sin tu equipo, un workflow de **GitHub Actions** (cron gratis)

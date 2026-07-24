@@ -30,6 +30,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -38,6 +39,7 @@ from db.loader import init_db
 from transform.indicators import (
     dca_status,
     execution_summary,
+    holdings_by_group,
     holdings_table,
     macro_table,
     portfolio_table,
@@ -567,6 +569,30 @@ def _section_thesis(conn, settings) -> None:
     )
 
 
+def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:
+    """Allocation donut from a [group, value_usd, weight_pct] frame (None if empty).
+
+    Static, weekly-glance figure (§2): no animation, no live refresh.
+    """
+    if df is None or df.empty:
+        return None
+    return (
+        alt.Chart(df)
+        .mark_arc(innerRadius=55)
+        .encode(
+            theta=alt.Theta("value_usd:Q", stack=True),
+            color=alt.Color("group:N", sort="-y", legend=alt.Legend(title=None, orient="bottom")),
+            order=alt.Order("value_usd:Q", sort="descending"),
+            tooltip=[
+                alt.Tooltip("group:N", title="Grupo"),
+                alt.Tooltip("value_usd:Q", title="USD", format=",.0f"),
+                alt.Tooltip("weight_pct:Q", title="Peso", format=".1f"),
+            ],
+        )
+        .properties(title=title, height=300)
+    )
+
+
 def _fmt_amount(a: float | None) -> str:
     """Format a token amount with up to 8 decimals, trailing zeros trimmed."""
     if a is None or pd.isna(a):
@@ -630,6 +656,23 @@ def _section_execution(conn, settings) -> None:
             "futuros off por defecto, §11). Solo lectura: el panel nunca opera ni retira (§2, §11). "
             "El registro real de comisiones permite comparar contra el baseline de mantener."
         )
+
+        # Allocation donuts: concentration by thesis category (§5) + weight by asset.
+        by_cat = holdings_by_group(holdings, settings, by="thesis_category")
+        by_asset = holdings_by_group(holdings, settings, by="asset")
+        ch_cat = _donut(by_cat, "Asignación por categoría de tesis")
+        ch_asset = _donut(by_asset, "Asignación por activo")
+        if ch_cat is not None or ch_asset is not None:
+            g1, g2 = st.columns(2)
+            if ch_cat is not None:
+                g1.altair_chart(ch_cat, use_container_width=True)
+            if ch_asset is not None:
+                g2.altair_chart(ch_asset, use_container_width=True)
+            st.caption(
+                "Donut por **categoría de tesis**: hace visible la concentración disfrazada de "
+                "diversificación (§5) — varias posiciones RWA (LINK/ONDO/XLM/HBAR) cuentan como una "
+                "sola apuesta. `Efectivo` = stablecoins; `Otros` = activos fuera de §5 (p. ej. WBETH)."
+            )
 
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")

@@ -429,6 +429,54 @@ def _holding_row(
     }
 
 
+def holdings_by_group(
+    holdings: pd.DataFrame, settings: Settings, by: str = "thesis_category"
+) -> pd.DataFrame:
+    """Aggregate priced holdings into groups for the allocation charts (§5).
+
+    Sums real-portfolio USD value grouped by ``by`` — ``"thesis_category"`` (the §5
+    concentration view: several RWA positions collapse into one bet), ``"tier"``, or
+    ``"asset"``. Cash/stablecoins bucket into ``"Efectivo"``; held-but-untracked assets
+    (not in ``settings.assets``, e.g. WBETH) bucket into ``"Otros"``. Rows without a USD
+    value are dropped so an unpriced dust position never distorts the weights.
+
+    Args:
+        holdings: output of :func:`holdings_table` (needs ``asset``/``value_usd``/``is_cash``).
+        settings: to map each symbol to its ``thesis_category``/``tier``.
+        by: grouping key — ``"thesis_category"`` | ``"tier"`` | ``"asset"``.
+
+    Returns:
+        Columns ``[group, value_usd, weight_pct]``, descending by value. Empty frame
+        (same columns) when there is nothing priced to chart.
+    """
+    empty = pd.DataFrame(columns=["group", "value_usd", "weight_pct"])
+    if holdings is None or holdings.empty:
+        return empty
+    attr_by_symbol = {a["symbol"]: a.get(by) for a in settings.assets}
+
+    def _group(row: Mapping[str, Any]) -> str:
+        if bool(row.get("is_cash")):
+            return "Efectivo"
+        if by == "asset":
+            return str(row["asset"])
+        g = attr_by_symbol.get(row["asset"])
+        return str(g) if g else "Otros"
+
+    priced = holdings[holdings["value_usd"].notna()].copy()
+    if priced.empty:
+        return empty
+    priced["group"] = priced.apply(_group, axis=1)
+    agg = (
+        priced.groupby("group", as_index=False)["value_usd"]
+        .sum()
+        .sort_values("value_usd", ascending=False, na_position="last")
+        .reset_index(drop=True)
+    )
+    total = agg["value_usd"].sum()
+    agg["weight_pct"] = agg["value_usd"] / total * 100 if total else 0.0
+    return agg
+
+
 def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Aggregate real executed trades (level 4): invested, proceeds, fees, count.
 

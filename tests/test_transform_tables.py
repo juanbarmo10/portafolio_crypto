@@ -17,6 +17,7 @@ from db.loader import init_db, upsert_observations, upsert_trades
 from transform.indicators import (
     dca_status,
     execution_summary,
+    holdings_by_group,
     holdings_table,
     macro_table,
     portfolio_table,
@@ -303,6 +304,40 @@ def test_holdings_table_drops_dust(conn, settings) -> None:
     )
     table = holdings_table(conn, settings)
     assert "BTC" not in set(table["asset"])
+
+
+def test_holdings_by_group_buckets_and_weights(conn, settings) -> None:
+    # BTC (tracked) $1300 · USDT cash $500 · WBETH (untracked, not in §5) 0.05@2000 = $100.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("wrapped-beacon-eth:price", "2026-07-23T00:00:00+00:00", 2000.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 500.0, source="binance"),
+                _obs("WBETH:balance:spot", "2026-07-23T00:00:00+00:00", 0.05, source="binance"),
+            ]
+        ),
+    )
+    holdings = holdings_table(conn, settings)
+
+    by_cat = holdings_by_group(holdings, settings, by="thesis_category")
+    groups = dict(zip(by_cat["group"], by_cat["value_usd"], strict=False))
+    assert groups["Efectivo"] == pytest.approx(500.0)  # stablecoin -> cash bucket
+    assert groups["Otros"] == pytest.approx(100.0)  # WBETH not in §5 -> Otros
+    btc_cat = next(a["thesis_category"] for a in settings.assets if a["symbol"] == "BTC")
+    assert groups[btc_cat] == pytest.approx(1300.0)  # tracked asset under its category
+    assert by_cat["weight_pct"].sum() == pytest.approx(100.0)
+
+    by_asset = holdings_by_group(holdings, settings, by="asset")
+    assert set(by_asset["group"]) == {"BTC", "WBETH", "Efectivo"}
+
+
+def test_holdings_by_group_empty(settings) -> None:
+    out = holdings_by_group(pd.DataFrame(), settings)
+    assert out.empty
+    assert list(out.columns) == ["group", "value_usd", "weight_pct"]
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

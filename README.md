@@ -9,6 +9,35 @@ El contexto completo del proyecto (filosofía de diseño, activos, tesis, hoja d
 por fases y trampas del dominio) vive en [CLAUDE.md](CLAUDE.md). Las **decisiones técnicas
 y ecuaciones** (formulación, efecto en cripto, uso y qué validar) están en [RESEARCH.md](RESEARCH.md).
 
+## Ejecutar el proyecto (resumen)
+
+```bash
+# 1. Entorno (una vez): crea el venv e instala todo (runtime + dashboard + mercados + dev).
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,app,markets]"
+
+# 2. Secretos (una vez): copia la plantilla y añade las claves que tengas.
+cp config/.env.example config/.env    # FRED_API_KEY, BINANCE_API_KEY/SECRET (read-only), TELEGRAM_*
+
+# 3. Ingesta: descarga datos de todas las fuentes a la DB (idempotente).
+python run_ingest.py                  # o: python run_ingest.py --dry-run  (solo crea la DB)
+
+# 4. Dashboard: abre el panel de 5 secciones (pull, sin auto-refresh).
+./run_dashboard.sh                    # http://localhost:8501
+
+# 5. Alertas: evalúa las reglas y envía a Telegram (dry-run si no hay bot).
+python run_alerts.py                  # o --dry-run para solo loguear
+
+# 6. Validación: informe honesto de backtest (retornos forward + bootstrap).
+python run_validation.py
+
+# 7. Todo en uno (para cron/systemd): ingesta -> alertas (+ validación los domingos).
+./run_daily.sh                        # automatización diaria: ver deploy/README.md
+
+# Tests + lint.
+pytest && ruff check .
+```
+
 ## Estado
 
 **Fases 0-3 completadas.** Ver la tabla de fases en [CLAUDE.md](CLAUDE.md) §12.

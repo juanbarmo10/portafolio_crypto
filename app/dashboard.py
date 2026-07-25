@@ -225,7 +225,7 @@ def _dilution_tooltip(record: dict) -> str:
 def _section_macro(conn, settings) -> None:
     """Level 1 — macro context. Interactive grid (sort / reorder / hide columns)."""
     st.header("MACRO", anchor="macro")
-    st.caption("¿Hay apetito por riesgo? — nivel 1 del checklist (§2).")
+    st.caption("¿Hay apetito por riesgo? — nivel 1 del checklist (sección 2).")
     df = macro_table(conn, settings)
     if df.empty or df["value"].notna().sum() == 0:
         st.info(
@@ -274,7 +274,7 @@ def _section_macro(conn, settings) -> None:
                 help="Efecto del movimiento en cripto (alcista/bajista), no la dirección cruda."
             ),
             "Publicado": st.column_config.TextColumn(
-                help="Fecha de primera publicación; los backtests filtran por ella (look-ahead, §9)."
+                help="Fecha de primera publicación; los backtests filtran por ella (look-ahead, sección 9)."
             ),
             "Descripción": st.column_config.TextColumn(
                 width="medium", help="Definición del indicador."
@@ -303,7 +303,7 @@ def _render_btc_dominance(attrs: dict) -> None:
     help_text = (
         "Cuota de BTC sobre la capitalización total de cripto. Subiendo = rotación hacia "
         "BTC y aversión al riesgo en altcoins; bajando = apetito por altcoins, entorno "
-        "favorable a SOL/LINK (§2, nivel 2). Cambio en puntos porcentuales (pp)."
+        "favorable a SOL/LINK (sección 2, nivel 2). Cambio en puntos porcentuales (pp)."
     )
     c1, c2, c3 = st.columns([2, 1, 1])
     c1.metric(label, f"{dominance:.1f}%", help=help_text)
@@ -364,7 +364,7 @@ def _section_portfolio(conn, settings) -> None:
         width="stretch",
         column_config={
             "Logo": st.column_config.ImageColumn("", width="small"),
-            "Activo": st.column_config.TextColumn(help="Token seguido (§5)."),
+            "Activo": st.column_config.TextColumn(help="Token seguido (sección 5)."),
             "Dist. ATH": st.column_config.TextColumn(help="Distancia al máximo histórico."),
             "Dilución": st.column_config.TextColumn(
                 help="Circulante / suministro máximo. ⚠ = por debajo del umbral de dilución."
@@ -373,7 +373,7 @@ def _section_portfolio(conn, settings) -> None:
                 help="Próximo unlock del token (calendario en Fase 2)."
             ),
             "Tesis": st.column_config.TextColumn(
-                width="medium", help="Tesis / métrica de invalidación (§5)."
+                width="medium", help="Tesis / métrica de invalidación (sección 5)."
             ),
         },
     )
@@ -391,7 +391,7 @@ def _fmt_funding_z(z: float | None) -> str:
 
 
 def _color_funding_z(cell: object) -> str:
-    """Styler CSS: red/bold when |z| >= 2 (crowded positioning, §8)."""
+    """Styler CSS: red/bold when |z| >= 2 (crowded positioning, sección 8)."""
     try:
         z = float(str(cell))
     except ValueError:
@@ -415,7 +415,7 @@ def _color_rally(cell: object) -> str:
 def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, int]]:
     """Return [(symbol, date, days_until)] for configured next_unlock within the window.
 
-    Reads config/assets_meta.yaml (manual dates, §5). Empty until dates are filled in.
+    Reads config/assets_meta.yaml (manual dates, sección 5). Empty until dates are filled in.
     """
     today = datetime.now(timezone.utc).date()
     out: list[tuple[str, str, int]] = []
@@ -436,7 +436,7 @@ def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, i
 def _section_market_structure(conn, settings) -> None:
     """Level 2 — market structure: ETF flows, rally quality, funding, unlocks."""
     st.header("3 · Estructura de mercado", anchor="estructura")
-    st.caption("¿El rally tiene sustento o es mecánico? — nivel 2 del checklist (§2).")
+    st.caption("¿El rally tiene sustento o es mecánico? — nivel 2 del checklist (sección 2).")
 
     # ETF flows: streak of positive/negative days + 5-day sum, per asset.
     etf = etf_flow_summary(conn, settings)
@@ -460,6 +460,7 @@ def _section_market_structure(conn, settings) -> None:
     if not ms.empty:
         rows = [
             {
+                "Logo": settings.meta_for(r["symbol"]).get("logo_url") or "",
                 "Activo": r["symbol"],
                 "Estado": _rally_label(r["rally_state"]),
                 "Funding z": _fmt_funding_z(r["funding_z"]),
@@ -481,6 +482,7 @@ def _section_market_structure(conn, settings) -> None:
             hide_index=True,
             width="stretch",
             column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
                 "Estado": st.column_config.TextColumn(
                     help="Precio↑ OI↑ = Convicción (dinero nuevo); Precio↑ OI↓ = Mecánico "
                     "(cierre de cortos, frágil); Precio↓ OI↑ = Distribución; Precio↓ OI↓ = "
@@ -497,13 +499,13 @@ def _section_market_structure(conn, settings) -> None:
             },
         )
         st.caption(
-            "Clasificación del rally por divergencia precio/OI y funding z-score (§2 nivel 2, §8). "
+            "Clasificación del rally por divergencia precio/OI y funding z-score (sección 2 nivel 2, sección 8). "
             "Verde/rojo en Precio/OI = dirección; Funding z en rojo = extremo (≥2)."
         )
     else:
         st.info("Sin datos de derivados. Ejecuta `python run_ingest.py` (extra `.[markets]`).")
 
-    # Upcoming unlocks (manual config, §5: revisar siempre).
+    # Upcoming unlocks (manual config, sección 5: revisar siempre).
     unlocks = _upcoming_unlocks(settings, within_days=30)
     if unlocks:
         st.write(
@@ -513,7 +515,7 @@ def _section_market_structure(conn, settings) -> None:
     else:
         st.caption(
             "Próximos unlocks: ninguno configurado. Añade `next_unlock: \"YYYY-MM-DD\"` por "
-            "token en `config/assets_meta.yaml` (§5: revisar siempre, sin excepción)."
+            "token en `config/assets_meta.yaml` (sección 5: revisar siempre, sin excepción)."
         )
 
 
@@ -561,7 +563,7 @@ def _section_thesis(conn, settings) -> None:
             "Logo": st.column_config.ImageColumn("", width="small"),
             "Categoría tesis": st.column_config.TextColumn(
                 help="Agrupación por modo de fallo / megatendencia. Diversificar por "
-                "categoría, no por ticker (§5). Ver la columna 'Nota categoría'."
+                "categoría, no por ticker (sección 5). Ver la columna 'Nota categoría'."
             ),
             "Tipo": st.column_config.TextColumn(
                 help="Origen del TVL: Protocolo = app DeFi (DefiLlama /protocol); "
@@ -573,10 +575,10 @@ def _section_thesis(conn, settings) -> None:
             ),
             "MC/TVL": st.column_config.TextColumn(
                 help="Capitalización / TVL. Alto = precio caro respecto a la actividad "
-                "capturada (value accrual, §2)."
+                "capturada (value accrual, sección 2)."
             ),
             "Tesis": st.column_config.TextColumn(
-                width="medium", help="Tesis / métrica de invalidación (§5)."
+                width="medium", help="Tesis / métrica de invalidación (sección 5)."
             ),
             "Nota categoría": st.column_config.TextColumn(
                 width="medium", help="Explicación breve de la categoría de tesis."
@@ -585,7 +587,7 @@ def _section_thesis(conn, settings) -> None:
     )
     st.caption(
         "Todos los activos, agrupados por *categoría de tesis* para exponer concentración "
-        "disfrazada de diversificación (§5). **Clic en una fila para ver el historial de TVL** "
+        "disfrazada de diversificación (sección 5). **Clic en una fila para ver el historial de TVL** "
         "(activos sin TVL rastreado no muestran gráfico). Verde/rojo = variación de TVL."
     )
     sel = _selected_row(event)
@@ -600,7 +602,7 @@ def _section_thesis(conn, settings) -> None:
 def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:
     """Allocation donut from a [group, value_usd, weight_pct] frame (None if empty).
 
-    Static, weekly-glance figure (§2): no animation, no live refresh.
+    Static, weekly-glance figure (sección 2): no animation, no live refresh.
     """
     if df is None or df.empty:
         return None
@@ -639,9 +641,9 @@ def _selected_row(event) -> int | None:
 
 
 def _drilldown_chart(conn, source: str, series_id: str, title: str) -> None:
-    """Line chart of one stored series' daily history (§13 #3).
+    """Line chart of one stored series' daily history (sección 13 #3).
 
-    Daily resolution only, no intraday (§11). Shows a note when history is too thin
+    Daily resolution only, no intraday (sección 11). Shows a note when history is too thin
     to plot (it accumulates with each ``run_ingest.py``).
     """
     hist = series_history(conn, source, series_id).dropna()
@@ -651,7 +653,7 @@ def _drilldown_chart(conn, source: str, series_id: str, title: str) -> None:
     if len(hist) < 2:
         st.info(
             f"Solo un punto de **{title}**; el historial se acumula con cada "
-            "`run_ingest.py` (resolución diaria, §11)."
+            "`run_ingest.py` (resolución diaria, sección 11)."
         )
         return
     data = hist.rename(title).to_frame()
@@ -706,6 +708,7 @@ def _section_execution(conn, settings) -> None:
             )
         show = pd.DataFrame(
             {
+                "Logo": [settings.meta_for(a).get("logo_url") or "" for a in holdings["asset"]],
                 "Activo": holdings["asset"],
                 "Cantidad": holdings["amount"].map(_fmt_amount),
                 "Precio": holdings["price_usd"].map(_fmt_usd),
@@ -716,15 +719,20 @@ def _section_execution(conn, settings) -> None:
                 "Nota": holdings["note"],
             }
         )
-        st.dataframe(show, hide_index=True, width="stretch")
+        st.dataframe(
+            show,
+            hide_index=True,
+            width="stretch",
+            column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+        )
         wallets = ", ".join(settings.source("binance_account").get("wallets", ["spot"]))
         st.caption(
             f"Balances sumados entre wallets: **{wallets}** (config `binance_account.wallets`; "
-            "futuros off por defecto, §11). Solo lectura: el panel nunca opera ni retira (§2, §11). "
+            "futuros off por defecto, sección 11). Solo lectura: el panel nunca opera ni retira (sección 2, sección 11). "
             "El registro real de comisiones permite comparar contra el baseline de mantener."
         )
 
-        # Allocation donuts: concentration by thesis category (§5) + weight by asset.
+        # Allocation donuts: concentration by thesis category (sección 5) + weight by asset.
         by_cat = holdings_by_group(holdings, settings, by="thesis_category")
         by_asset = holdings_by_group(holdings, settings, by="asset")
         ch_cat = _donut(by_cat, "Asignación por categoría de tesis")
@@ -737,8 +745,8 @@ def _section_execution(conn, settings) -> None:
                 g2.altair_chart(ch_asset, width="stretch")
             st.caption(
                 "Donut por **categoría de tesis**: hace visible la concentración disfrazada de "
-                "diversificación (§5) — varias posiciones RWA (LINK/ONDO/XLM/HBAR) cuentan como una "
-                "sola apuesta. `Efectivo` = stablecoins; `Otros` = activos fuera de §5 (p. ej. WBETH)."
+                "diversificación (sección 5) — varias posiciones RWA (LINK/ONDO/XLM/HBAR) cuentan como una "
+                "sola apuesta. `Efectivo` = stablecoins; `Otros` = activos fuera de sección 5 (p. ej. WBETH)."
             )
 
     # --- DCA plan (manual) ---------------------------------------------------
@@ -764,7 +772,7 @@ def _section_execution(conn, settings) -> None:
 
 @st.cache_data(ttl=3600, show_spinner="Validando señales (backtest)…")
 def _validation_rows(db_path_str: str, z: float, horizon: int) -> list[dict]:
-    """Funding z-score backtest per asset → honest edge rows (§8). Cached ~1h (~3s cold).
+    """Funding z-score backtest per asset → honest edge rows (sección 8). Cached ~1h (~3s cold).
 
     Reopens its own connection so the result is a plain serializable list (cacheable).
     Works on both backends: init_db routes to Neon when DATABASE_URL is set.
@@ -797,15 +805,15 @@ def _validation_rows(db_path_str: str, z: float, horizon: int) -> list[dict]:
 
 
 def _section_validation(settings) -> None:
-    """Read-only showcase of the honest signal-validation table (§8, §13 #4).
+    """Read-only showcase of the honest signal-validation table (sección 8, sección 13 #4).
 
     Public-safe: computed from public price/funding data (no account), so it renders on
     the public deploy too. This is a *method* showcase and an honest result, not advice.
     """
     st.header("Validación de señales", anchor="validacion")
     st.caption(
-        "¿La señal tiene *edge*? Backtest honesto (§8), no una recomendación. Señal probada: "
-        "funding z-score ≥ 1.0 (ventana 90 d, *point-in-time*, sin look-ahead §9) → retorno a "
+        "¿La señal tiene *edge*? Backtest honesto (sección 8), no una recomendación. Señal probada: "
+        "funding z-score ≥ 1.0 (ventana 90 d, *point-in-time*, sin look-ahead sección 9) → retorno a "
         "7 d del cierre del perp, contra baseline de todas las fechas, p-valor por bootstrap."
     )
     rows = _validation_rows(str(settings.db_path), 1.0, 7)
@@ -821,6 +829,7 @@ def _section_validation(settings) -> None:
 
     show = pd.DataFrame(
         {
+            "Logo": [settings.meta_for(r["asset"]).get("logo_url") or "" for r in rows],
             "Activo": [r["asset"] for r in rows],
             "n": [r["n"] for r in rows],
             "Señal %": [_signed(r["signal"]) for r in rows],
@@ -829,11 +838,15 @@ def _section_validation(settings) -> None:
             "p": ["—" if r["pvalue"] is None else f"{r['pvalue']:.3f}" for r in rows],
         }
     )
+    # Color the Edge column by sign: green = signal beat baseline, red = weaker
+    # (the mostly-red result is coherent with the 'crowded longs -> correction' thesis).
+    styler = show.style.map(_color_by_sign, subset=["Edge (pp)"])
     st.dataframe(
-        show,
+        styler,
         hide_index=True,
         width="stretch",
         column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
             "n": st.column_config.TextColumn(help="Nº de fechas con señal (muestra)."),
             "Señal %": st.column_config.TextColumn(
                 help="Retorno medio a 7 d tras la señal."
@@ -854,7 +867,7 @@ def _section_validation(settings) -> None:
     st.caption(
         "**Nota honesta:** muestras pequeñas (~30–90 d), p-valores poco potentes y *multiple "
         "testing* (varios activos → falsos positivos esperables). **Preliminar, no accionable.** "
-        "Documentar el resultado aunque no haya edge es parte del proyecto (§8); se reejecuta al "
+        "Documentar el resultado aunque no haya edge es parte del proyecto (sección 8); se reejecuta al "
         "acumular historial. Cacheado 1 h."
     )
 
@@ -862,23 +875,24 @@ def _section_validation(settings) -> None:
 def _sidebar_nav(settings) -> None:
     """Anchor navigation to jump between sections.
 
-    Links follow the mandated level 1->4 order (§2): Macro stays first so the hierarchy
+    Links follow the mandated level 1->4 order (sección 2): Macro stays first so the hierarchy
     (macro overrides thesis) is always visible. The level-4 link is hidden in public mode,
     where that section is not rendered.
     """
-    links = [
+    checklist = [
         ("1 · Macro", "macro"),
         ("2 · Radar", "radar"),
         ("3 · Estructura de mercado", "estructura"),
         ("4 · Tesis", "tesis"),
     ]
     if not settings.public_mode:
-        links.append(("5 · Ejecución", "ejecucion"))
-    links.append(("Validación", "validacion"))
+        checklist.append(("5 · Ejecución", "ejecucion"))
     with st.sidebar:
         st.markdown("### Navegación")
-        st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in links))
-        st.caption("Niveles 1→4 en orden (§2): el macro manda sobre la tesis del activo.")
+        st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in checklist))
+        st.caption("Niveles 1→4 en orden (sección 2): el macro manda sobre la tesis del activo.")
+        st.divider()
+        st.markdown("**Extra**\n\n- [Validación de señales](#validacion)")
 
 
 def main() -> None:
@@ -899,7 +913,7 @@ def main() -> None:
         st.title("Portafolio Crypto - Panel")
         st.caption(
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
-            "Frecuencia de consulta óptima: semanal (§2)."
+            "Frecuencia de consulta óptima: semanal (sección 2)."
         )
         _section_macro(conn, settings)
         st.divider()

@@ -41,11 +41,11 @@ pytest && ruff check .
 
 ## Estado
 
-**Fases 0-3 completadas; Fase 4 (producción) en curso.**
+**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridad 1 lista.**
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
-- Configuración externalizada: `config/settings.yaml` (activos §5, umbrales, IDs verificados,
+- Configuración externalizada: `config/settings.yaml` (activos sección 5, umbrales, IDs verificados,
   metadatos de series FRED, categorías de tesis, exchanges de derivados, scraper ETF) y
   `config/assets_meta.yaml` (logos, descripciones y `next_unlock` por token).
 - Esquema SQLite en formato largo (`db/schema.sql`) — portable a PostgreSQL/TimescaleDB.
@@ -62,16 +62,21 @@ Incluye hasta ahora:
   `config/.env` (ver `.env.example`); si falta, se omite. El capital no legible con key de solo
   lectura (p. ej. grid trading bots) se registra a mano en `binance_account.manual_holdings`.
 - Dashboard Streamlit con 5 secciones (**Macro / Radar / Estructura de mercado / Tesis /
-  Ejecución**): tablas interactivas (ordenar/reordenar/ocultar), colores y flechas ▲▼, logos,
-  y tooltips de efecto en cripto. Pull, sin auto-refresh (§2).
+  Ejecución**) + un showcase de **Validación**: tablas interactivas (ordenar/reordenar/ocultar),
+  colores y flechas ▲▼, logos por token, y tooltips de efecto en cripto. Pull, sin auto-refresh (sección 2).
+- **Análisis visual (Fase 5, Prioridad 1):** navegación por *sidebar* con anclas; **donuts de
+  asignación** de la cartera (por categoría de tesis y por activo, Altair); **drill-down por clic**
+  en las tablas Macro y Tesis → gráfico de línea del historial diario de la serie; y la **tabla de
+  validación** (backtest honesto) embebida y cacheada. Todo estático/diario, sin intradía (sección 11).
 - **Alertas** (`run_alerts.py`): motor declarativo (`alerts.rules` en config) — racha de salidas
   ETF, funding z extremo, caída de TVL, unlock próximo, recordatorio de aporte mensual — con
   entrega por Telegram (dry-run si no hay bot) y dedup por `alerts_log`.
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
-  significancia por bootstrap; z-scores point-in-time (sin look-ahead, §9). Ver *Validación* abajo.
+  significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 113) de esquema, idempotencia, config, indicadores, rally-quality, alertas,
-  validación, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
+- Tests (`pytest`, 124) de esquema, idempotencia, config (incl. override local), indicadores,
+  rally-quality, alertas, validación, parsers de ingesta (incl. fixture Farside congelado),
+  holdings (incl. agrupación para donuts) y humo de render.
 
 ## Requisitos
 
@@ -100,7 +105,7 @@ Los secretos van solo en `config/.env` (ignorado por git). El resto de la config
 
 > **IDs de activos:** cada `coingecko_id` / `defillama` en `settings.yaml` está marcado
 > `verified: false`. Confirmar cada ID contra la API en vivo antes de confiar en un
-> número para una decisión (decisión abierta de §12).
+> número para una decisión (decisión abierta de sección 12).
 
 ## Uso
 
@@ -129,7 +134,7 @@ python run_validation.py --z 1.5 --horizon 7
 > `pip install -e ".[markets]"` (ccxt, lxml, websockets).
 
 `run_ingest.py` es idempotente: ejecutarlo dos veces no duplica filas. El panel es
-*pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, §2).
+*pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, sección 2).
 
 ## Rutina diaria (mantener la DB al día)
 
@@ -146,7 +151,7 @@ recupera en el siguiente arranque. No hace falta tenerlo encendido 24/7 ni a una
 
 > **Tu única tarea recurrente:** encender el PC cada 1-2 días. El resto es automático.
 > (Los cambios de precio 24h/7d/30d y el `OI 30d` necesitan acumular historial: se rellenan solos
-> conforme el timer corre varios días — no es un fallo, ver §12 y las notas de datos.)
+> conforme el timer corre varios días — no es un fallo, ver sección 12 y las notas de datos.)
 
 ### Comprobar que corrió
 
@@ -175,7 +180,7 @@ evitar el problema del `&` al sourcear).
 ## Validación de señales (resultado preliminar)
 
 > Documentar los resultados de validación **incluidos los que no funcionan** es parte del
-> proyecto (§8). Esto es un resultado *preliminar y honesto*, no una recomendación.
+> proyecto (sección 8). Esto es un resultado *preliminar y honesto*, no una recomendación.
 
 **Señal probada:** funding z-score alto (≥1.0, ventana 90 d, *point-in-time*) → retorno a 7 días
 del cierre del perp, contra baseline de todas las fechas, con p-valor por bootstrap (permutación).
@@ -198,10 +203,35 @@ testing* (11 activos → se esperan falsos positivos), y SOL/UNI van en contra. 
 Reejecutar `python run_validation.py` al acumular meses de datos. *(Cifras del 2026-07-23; cambiarán
 al crecer el historial.)*
 
+### Cómo se ejecuta el backtest
+
+```bash
+python run_validation.py --z 1.5 --horizon 7   # umbral z y horizonte (días) configurables
+```
+
+Paso a paso (código en `validation/`):
+
+1. **Fechas de señal** (`funding_zscore_backtest`): calcula el funding z-score *rolling* de 90 días
+   **point-in-time** (`rolling_zscore` — solo usa datos hasta cada fecha, sin look-ahead, sección 9) y marca
+   como señal las fechas con `z ≥ umbral`.
+2. **Retorno forward** (`forward_return`): desde cada fecha, el retorno a `horizon` días del cierre
+   del perp (mismo venue que el funding).
+3. **Baseline** (`evaluate_signal`): el mismo retorno forward sobre **todas** las fechas, no solo las
+   de señal — el "¿y si hubiera entrado en cualquier día?".
+4. **Significancia** (`bootstrap_mean_diff_pvalue`): test de **permutación** — reasigna al azar las
+   etiquetas señal/baseline miles de veces y mide con qué frecuencia el azar reproduce un *edge* tan
+   grande como el observado. Eso es el p-valor.
+5. **Salida por activo:** `n` (nº de señales), retorno medio de señal y de baseline, `edge = señal −
+   base` (pp) y `p`. **La misma tabla se muestra read-only en el dashboard** (sección *Validación*,
+   coloreada por signo y cacheada 1 h con `@st.cache_data`).
+
+El detalle metodológico (ecuaciones, sesgos y qué validar) se mantiene en la documentación de diseño
+interna del proyecto.
+
 ## Tests
 
 ```bash
-pytest            # suite completa (120)
+pytest            # suite completa (124)
 ruff check .      # linting
 ```
 
@@ -249,7 +279,7 @@ PY
 ```
 
 - Conserva `?sslmode=require`. `holdings` y `trades` deben dar **0**: la ingesta a Neon usa
-  `run_ingest.py --public` y **nunca** sube la cuenta de Binance (§ seguridad).
+  `run_ingest.py --public` y **nunca** sube la cuenta de Binance (por seguridad).
 
 ## Estructura
 

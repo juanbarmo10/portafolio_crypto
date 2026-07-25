@@ -43,3 +43,49 @@ def test_public_mode_defaults_false_and_env_override(monkeypatch) -> None:
     load_settings.cache_clear()
     assert load_settings().public_mode is True
     load_settings.cache_clear()
+
+
+def test_deep_merge_nested_and_list_replace() -> None:
+    """Nested dicts merge key-by-key; lists replace wholesale; inputs untouched."""
+    from core.config import _deep_merge
+
+    base = {"a": {"x": 1, "y": 2}, "list": [1, 2], "keep": 9}
+    override = {"a": {"y": 20, "z": 30}, "list": [3]}
+    assert _deep_merge(base, override) == {
+        "a": {"x": 1, "y": 20, "z": 30},
+        "list": [3],
+        "keep": 9,
+    }
+    assert base["a"] == {"x": 1, "y": 2}  # not mutated
+
+
+def test_settings_local_override_merges(tmp_path, monkeypatch) -> None:
+    """A gitignored settings.local.yaml deep-merges over settings.yaml (manual_holdings)."""
+    import core.config as config
+
+    local = tmp_path / "settings.local.yaml"
+    local.write_text(
+        'sources:\n'
+        '  binance_account:\n'
+        '    manual_holdings:\n'
+        '      - {label: "Test bot", value_usd: 123, note: local}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "SETTINGS_LOCAL_PATH", local)
+    load_settings.cache_clear()
+    settings = load_settings()
+    assert settings.source("binance_account").get("manual_holdings") == [
+        {"label": "Test bot", "value_usd": 123, "note": "local"}
+    ]
+    assert "wallets" in settings.source("binance_account")  # base keys survive the merge
+    load_settings.cache_clear()
+
+
+def test_settings_local_absent_is_noop(tmp_path, monkeypatch) -> None:
+    """No local file -> manual_holdings absent (the capital-moved-to-spot case)."""
+    import core.config as config
+
+    monkeypatch.setattr(config, "SETTINGS_LOCAL_PATH", tmp_path / "missing.yaml")
+    load_settings.cache_clear()
+    assert load_settings().source("binance_account").get("manual_holdings") is None
+    load_settings.cache_clear()

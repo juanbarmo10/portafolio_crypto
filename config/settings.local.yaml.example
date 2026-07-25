@@ -1,0 +1,18 @@
+# Local override — gitignored, deep-merged OVER config/settings.yaml at load time.
+# Put PERSONAL / machine-specific config here so it never enters the public repo.
+#
+# Usage:
+#   cp config/settings.local.yaml.example config/settings.local.yaml
+#   # then edit config/settings.local.yaml (only include keys you want to override)
+#
+# Deep merge: nested dicts merge key-by-key; lists (like manual_holdings) replace
+# wholesale. Anything you omit falls through to settings.yaml unchanged.
+
+# Example — record capital the READ-ONLY Binance key cannot see (e.g. Spot Grid bots).
+# Each entry is a priced position {asset, amount, note} or a lump sum {label, value_usd, note}.
+#
+# sources:
+#   binance_account:
+#     manual_holdings:
+#       - {asset: BTC, amount: 0.002, note: "spot grid bot"}
+#       - {label: "Trading bots", value_usd: 200, note: "spot grid bots (read-only key can't see)"}

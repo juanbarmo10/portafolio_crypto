@@ -30,6 +30,9 @@ from dotenv import load_dotenv
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 CONFIG_DIR: Path = REPO_ROOT / "config"
 SETTINGS_PATH: Path = CONFIG_DIR / "settings.yaml"
+# Gitignored local override deep-merged over settings.yaml. Holds PERSONAL / machine-
+# specific config (e.g. `manual_holdings`) that must never enter the tracked repo.
+SETTINGS_LOCAL_PATH: Path = CONFIG_DIR / "settings.local.yaml"
 ASSETS_META_PATH: Path = CONFIG_DIR / "assets_meta.yaml"
 ENV_PATH: Path = CONFIG_DIR / ".env"
 
@@ -77,6 +80,22 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` onto ``base`` (override wins; nested dicts merge).
+
+    Non-dict values (including lists like ``manual_holdings``) are replaced wholesale,
+    so a local override sets only the keys it names and leaves the rest untouched.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @lru_cache(maxsize=1)
 def load_settings() -> Settings:
     """Load and cache the effective settings.
@@ -94,6 +113,15 @@ def load_settings() -> Settings:
         load_dotenv(ENV_PATH)
 
     raw = _load_yaml(SETTINGS_PATH)
+
+    # Optional gitignored local override, deep-merged over settings.yaml. Keeps personal
+    # data (e.g. manual_holdings) out of the tracked/public repo. An all-comments file
+    # parses to None -> treated as empty.
+    if SETTINGS_LOCAL_PATH.exists():
+        local = yaml.safe_load(SETTINGS_LOCAL_PATH.read_text(encoding="utf-8")) or {}
+        if not isinstance(local, dict):
+            raise ValueError(f"{SETTINGS_LOCAL_PATH} did not parse to a mapping.")
+        raw = _deep_merge(raw, local)
 
     # Optional per-asset display metadata (logos, tooltips). Absent -> empty.
     asset_meta = _load_yaml(ASSETS_META_PATH) if ASSETS_META_PATH.exists() else {}

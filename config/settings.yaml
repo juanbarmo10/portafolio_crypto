@@ -62,19 +62,18 @@ sources:
     # excluded from spot automatically (per asset present in Earn) to avoid double count.
     # WARNING: "future"/"delivery" require "Enable Futures" (also permits trading) and
     # contradict the no-leverage rule (§11); off by default. Spot Grid trading bots are
-    # NOT readable with a read-only key (Binance requires the trading permission) — use
-    # manual_holdings below for that capital.
+    # NOT readable with a read-only key (Binance requires the trading permission) — record
+    # that capital via `manual_holdings` in the LOCAL override (see below).
     wallets: ["spot", "funding", "earn"]
     # Price non-tracked held assets by their CoinGecko id (symbol -> id). WBETH is
     # liquid-staked ETH and trades ABOVE ETH (accrued rewards), so price it directly,
     # not as ETH. The coingecko ingester fetches these ids too.
     price_aliases:
       WBETH: wrapped-beacon-eth
-    # Capital the READ-ONLY key cannot see (e.g. Spot Grid trading bots). Recorded by
-    # hand; update when you start/stop a bot. Each entry is either a priced position
-    # {asset, amount, note} or a lump sum {label, value_usd, note}.
-    manual_holdings:
-      - {label: "Trading bots", value_usd: 200, note: "spot grid bots (no legible con key read-only)"}
+    # `manual_holdings` (real positions the read-only key can't see) is PERSONAL data and
+    # must NOT live in this tracked/public file. Put it in the gitignored
+    # `config/settings.local.yaml` (template: `config/settings.local.yaml.example`), which
+    # is deep-merged over this file at load time.
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20

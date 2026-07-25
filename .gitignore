@@ -1,5 +1,6 @@
 # Secrets & local data — never commit
 .env
+config/settings.local.yaml
 *.db
 *.db-journal
 *.sqlite

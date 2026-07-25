@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Make the repo root importable when run as a bare script (e.g. Streamlit Cloud,
 # which puts app/ on sys.path but not the project root, and does not install the
@@ -37,6 +38,7 @@ import streamlit as st
 from core.config import load_settings
 from db.loader import init_db
 from db.queries import series_history
+from validation.backtest import funding_zscore_backtest
 from transform.indicators import (
     dca_status,
     execution_summary,
@@ -760,6 +762,103 @@ def _section_execution(conn, settings) -> None:
         )
 
 
+@st.cache_data(ttl=3600, show_spinner="Validando señales (backtest)…")
+def _validation_rows(db_path_str: str, z: float, horizon: int) -> list[dict]:
+    """Funding z-score backtest per asset → honest edge rows (§8). Cached ~1h (~3s cold).
+
+    Reopens its own connection so the result is a plain serializable list (cacheable).
+    Works on both backends: init_db routes to Neon when DATABASE_URL is set.
+    """
+    settings = load_settings()
+    conn = init_db(Path(db_path_str))
+    try:
+        out: list[dict] = []
+        for asset in [a["symbol"] for a in settings.assets]:
+            res = funding_zscore_backtest(conn, settings, asset, z_threshold=z, horizons=(horizon,))
+            if res is None:
+                continue
+            stats = res[horizon]
+            if stats["n_signal"] == 0:
+                continue
+            out.append(
+                {
+                    "asset": asset,
+                    "n": stats["n_signal"],
+                    "signal": stats["mean_signal"],
+                    "baseline": stats["mean_baseline"],
+                    "edge": stats["edge"],
+                    "pvalue": stats["pvalue"],
+                }
+            )
+        out.sort(key=lambda r: (r["edge"] is None, r["edge"]))  # most-negative edge first
+        return out
+    finally:
+        conn.close()
+
+
+def _section_validation(settings) -> None:
+    """Read-only showcase of the honest signal-validation table (§8, §13 #4).
+
+    Public-safe: computed from public price/funding data (no account), so it renders on
+    the public deploy too. This is a *method* showcase and an honest result, not advice.
+    """
+    st.header("Validación de señales", anchor="validacion")
+    st.caption(
+        "¿La señal tiene *edge*? Backtest honesto (§8), no una recomendación. Señal probada: "
+        "funding z-score ≥ 1.0 (ventana 90 d, *point-in-time*, sin look-ahead §9) → retorno a "
+        "7 d del cierre del perp, contra baseline de todas las fechas, p-valor por bootstrap."
+    )
+    rows = _validation_rows(str(settings.db_path), 1.0, 7)
+    if not rows:
+        st.info(
+            "Sin fechas de señal todavía (historial de funding/close insuficiente). "
+            "La tabla se puebla al acumular datos; reejecuta al pasar semanas."
+        )
+        return
+
+    def _signed(x: float | None) -> str:
+        return "—" if x is None else f"{x:+.2f}"
+
+    show = pd.DataFrame(
+        {
+            "Activo": [r["asset"] for r in rows],
+            "n": [r["n"] for r in rows],
+            "Señal %": [_signed(r["signal"]) for r in rows],
+            "Base %": [_signed(r["baseline"]) for r in rows],
+            "Edge (pp)": [_signed(r["edge"]) for r in rows],
+            "p": ["—" if r["pvalue"] is None else f"{r['pvalue']:.3f}" for r in rows],
+        }
+    )
+    st.dataframe(
+        show,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "n": st.column_config.TextColumn(help="Nº de fechas con señal (muestra)."),
+            "Señal %": st.column_config.TextColumn(
+                help="Retorno medio a 7 d tras la señal."
+            ),
+            "Base %": st.column_config.TextColumn(
+                help="Retorno medio a 7 d sobre todas las fechas (baseline)."
+            ),
+            "Edge (pp)": st.column_config.TextColumn(
+                help="Señal − Base, en puntos porcentuales. Negativo = la señal precede a "
+                "retornos más débiles (coherente con 'largos hacinados → corrección')."
+            ),
+            "p": st.column_config.TextColumn(
+                help="p-valor por bootstrap (permutación). <0.05 = poco probable por azar, "
+                "pero con muestras pequeñas es poco potente."
+            ),
+        },
+    )
+    st.caption(
+        "**Nota honesta:** muestras pequeñas (~30–90 d), p-valores poco potentes y *multiple "
+        "testing* (varios activos → falsos positivos esperables). **Preliminar, no accionable.** "
+        "Documentar el resultado aunque no haya edge es parte del proyecto (§8); se reejecuta al "
+        "acumular historial. Cacheado 1 h."
+    )
+
+
 def _sidebar_nav(settings) -> None:
     """Anchor navigation to jump between sections.
 
@@ -775,6 +874,7 @@ def _sidebar_nav(settings) -> None:
     ]
     if not settings.public_mode:
         links.append(("5 · Ejecución", "ejecucion"))
+    links.append(("Validación", "validacion"))
     with st.sidebar:
         st.markdown("### Navegación")
         st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in links))
@@ -818,6 +918,8 @@ def main() -> None:
         else:
             st.divider()
             _section_execution(conn, settings)
+        st.divider()
+        _section_validation(settings)
     finally:
         conn.close()
 

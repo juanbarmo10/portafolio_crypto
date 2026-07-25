@@ -36,6 +36,7 @@ import streamlit as st
 
 from core.config import load_settings
 from db.loader import init_db
+from db.queries import series_history
 from transform.indicators import (
     dca_status,
     execution_summary,
@@ -232,6 +233,7 @@ def _section_macro(conn, settings) -> None:
         return
 
     rows = []
+    refs: list[tuple[str, str]] = []  # aligned with rows: (fred series_id, label)
     for r in df.to_dict("records"):
         if r["value"] is None or pd.isna(r["value"]):
             continue
@@ -252,12 +254,16 @@ def _section_macro(conn, settings) -> None:
                 "Descripción": r.get("description", ""),
             }
         )
+        refs.append((r["series_id"], r["label"]))
     show = pd.DataFrame(rows)
     styler = show.style.map(_color_by_sign, subset=["Δ vs. previo"])
-    st.dataframe(
+    event = st.dataframe(
         styler,
         hide_index=True,
         width="stretch",
+        key="macro_tbl",
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Δ vs. previo": st.column_config.TextColumn(
                 help="Variación frente a la observación anterior; NFP en miles de empleos (+K)."
@@ -274,10 +280,15 @@ def _section_macro(conn, settings) -> None:
         },
     )
     st.caption(
-        "Tabla interactiva: arrastra las cabeceras para reordenar y usa el menú de cada "
-        "columna para ordenar u ocultar. `Señal cripto` traduce el movimiento a su efecto "
-        "en cripto (CPI/PCE/NFP/Fed Funds/DXY inversos; curva directa)."
+        "Tabla interactiva: **clic en una fila para ver el historial** del indicador. "
+        "Arrastra las cabeceras para reordenar y usa el menú de cada columna para ordenar "
+        "u ocultar. `Señal cripto` traduce el movimiento a su efecto en cripto "
+        "(CPI/PCE/NFP/Fed Funds/DXY inversos; curva directa)."
     )
+    sel = _selected_row(event)
+    if sel is not None:
+        series_id, label = refs[sel]
+        _drilldown_chart(conn, "fred", series_id, label)
 
 
 def _render_btc_dominance(attrs: dict) -> None:
@@ -513,7 +524,11 @@ def _section_thesis(conn, settings) -> None:
         return
 
     cat_notes = settings.raw.get("thesis_categories", {})
+    slug_by_symbol = {
+        a["symbol"]: a["defillama"]["slug"] for a in settings.assets if a.get("defillama")
+    }
     rows = []
+    refs: list[tuple[str, str, str] | None] = []  # aligned: (source, series_id, title) or None
     for r in df.to_dict("records"):
         rows.append(
             {
@@ -529,12 +544,17 @@ def _section_thesis(conn, settings) -> None:
                 "Nota categoría": cat_notes.get(r["thesis_category"], ""),
             }
         )
+        slug = slug_by_symbol.get(r["symbol"])
+        refs.append(("defillama", f"{slug}:tvl", f"TVL {r['symbol']}") if slug else None)
     show = pd.DataFrame(rows)
     styler = show.style.map(_color_by_sign, subset=["TVL 7d", "TVL 30d"])
-    st.dataframe(
+    event = st.dataframe(
         styler,
         hide_index=True,
         width="stretch",
+        key="thesis_tbl",
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Logo": st.column_config.ImageColumn("", width="small"),
             "Categoría tesis": st.column_config.TextColumn(
@@ -563,10 +583,16 @@ def _section_thesis(conn, settings) -> None:
     )
     st.caption(
         "Todos los activos, agrupados por *categoría de tesis* para exponer concentración "
-        "disfrazada de diversificación (§5). La tabla interactiva no admite tooltips por "
-        "celda: las explicaciones por valor van en las columnas ocultables `Tesis` y "
-        "`Nota categoría`, y en la ⓘ de cada cabecera. Verde/rojo = variación de TVL."
+        "disfrazada de diversificación (§5). **Clic en una fila para ver el historial de TVL** "
+        "(activos sin TVL rastreado no muestran gráfico). Verde/rojo = variación de TVL."
     )
+    sel = _selected_row(event)
+    if sel is not None:
+        ref = refs[sel]
+        if ref is None:
+            st.info("Este activo no tiene TVL rastreado (p. ej. BTC, XRP, TAO): sin historial que mostrar.")
+        else:
+            _drilldown_chart(conn, ref[0], ref[1], ref[2])
 
 
 def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:
@@ -595,6 +621,41 @@ def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:
         )
         .properties(title=title, height=300)
     )
+
+
+def _selected_row(event) -> int | None:
+    """Return the positional index of the single selected row, or None.
+
+    Works with st.dataframe(on_select="rerun", selection_mode="single-row"); the
+    selection is returned in the data's original order, independent of client sorting.
+    """
+    try:
+        rows = event.selection.rows
+    except AttributeError:
+        return None
+    return rows[0] if rows else None
+
+
+def _drilldown_chart(conn, source: str, series_id: str, title: str) -> None:
+    """Line chart of one stored series' daily history (§13 #3).
+
+    Daily resolution only, no intraday (§11). Shows a note when history is too thin
+    to plot (it accumulates with each ``run_ingest.py``).
+    """
+    hist = series_history(conn, source, series_id).dropna()
+    if hist.empty:
+        st.info(f"Sin historial almacenado para **{title}** todavía.")
+        return
+    if len(hist) < 2:
+        st.info(
+            f"Solo un punto de **{title}**; el historial se acumula con cada "
+            "`run_ingest.py` (resolución diaria, §11)."
+        )
+        return
+    data = hist.rename(title).to_frame()
+    data.index.name = "fecha"
+    st.line_chart(data, height=260)
+    st.caption(f"Historial diario de **{title}** — {len(hist)} puntos. Vuelve a hacer clic para cerrar.")
 
 
 def _fmt_amount(a: float | None) -> str:

@@ -221,7 +221,7 @@ def _dilution_tooltip(record: dict) -> str:
 
 def _section_macro(conn, settings) -> None:
     """Level 1 — macro context. Interactive grid (sort / reorder / hide columns)."""
-    st.header("MACRO")
+    st.header("MACRO", anchor="macro")
     st.caption("¿Hay apetito por riesgo? — nivel 1 del checklist (§2).")
     df = macro_table(conn, settings)
     if df.empty or df["value"].notna().sum() == 0:
@@ -309,7 +309,7 @@ def _section_portfolio(conn, settings) -> None:
     # BTC dominance sits ABOVE the section title.
     _render_btc_dominance(df.attrs)
 
-    st.header("2 · Radar")
+    st.header("2 · Radar", anchor="radar")
     if df.empty or df["price"].notna().sum() == 0:
         st.info("Sin datos de precio. Ejecuta `python run_ingest.py`.")
         return
@@ -422,7 +422,7 @@ def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, i
 
 def _section_market_structure(conn, settings) -> None:
     """Level 2 — market structure: ETF flows, rally quality, funding, unlocks."""
-    st.header("3 · Estructura de mercado")
+    st.header("3 · Estructura de mercado", anchor="estructura")
     st.caption("¿El rally tiene sustento o es mecánico? — nivel 2 del checklist (§2).")
 
     # ETF flows: streak of positive/negative days + 5-day sum, per asset.
@@ -506,7 +506,7 @@ def _section_market_structure(conn, settings) -> None:
 
 def _section_thesis(conn, settings) -> None:
     """Level 3 — thesis health. All tokens, grouped by category; interactive grid."""
-    st.header("4 · Tesis — TVL por categoría")
+    st.header("4 · Tesis — TVL por categoría", anchor="tesis")
     df = thesis_tvl_table(conn, settings)
     if df.empty:
         st.info("Sin activos configurados en `settings.yaml`.")
@@ -607,7 +607,7 @@ def _fmt_amount(a: float | None) -> str:
 
 def _section_execution(conn, settings) -> None:
     """Level 4 — real account (read-only) + DCA plan."""
-    st.header("5 · Ejecución — cartera real y plan DCA")
+    st.header("5 · Ejecución — cartera real y plan DCA", anchor="ejecucion")
 
     # --- Real account (read-only Binance sync) -------------------------------
     st.subheader("Cartera real (Binance, solo lectura)")
@@ -699,6 +699,27 @@ def _section_execution(conn, settings) -> None:
         )
 
 
+def _sidebar_nav(settings) -> None:
+    """Anchor navigation to jump between sections.
+
+    Links follow the mandated level 1->4 order (§2): Macro stays first so the hierarchy
+    (macro overrides thesis) is always visible. The level-4 link is hidden in public mode,
+    where that section is not rendered.
+    """
+    links = [
+        ("1 · Macro", "macro"),
+        ("2 · Radar", "radar"),
+        ("3 · Estructura de mercado", "estructura"),
+        ("4 · Tesis", "tesis"),
+    ]
+    if not settings.public_mode:
+        links.append(("5 · Ejecución", "ejecucion"))
+    with st.sidebar:
+        st.markdown("### Navegación")
+        st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in links))
+        st.caption("Niveles 1→4 en orden (§2): el macro manda sobre la tesis del activo.")
+
+
 def main() -> None:
     """Entry point for `streamlit run app/dashboard.py`."""
     st.set_page_config(page_title="Portafolio Crypto - Panel", layout="wide")
@@ -713,6 +734,7 @@ def main() -> None:
     settings = load_settings()
     conn = init_db(settings.db_path)
     try:
+        _sidebar_nav(settings)
         st.title("Portafolio Crypto - Panel")
         st.caption(
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "

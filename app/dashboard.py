@@ -576,12 +576,16 @@ def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:
     """
     if df is None or df.empty:
         return None
+    # Altair 6.2 cannot serialize a pandas-3.0 DataFrame (it inlines zero rows -> blank
+    # chart). Feed pre-converted records via alt.Data so the values inline correctly;
+    # this requires explicit field types (:Q/:N) in every encoding, which we set below.
+    records = df.to_dict("records")
     return (
-        alt.Chart(df)
+        alt.Chart(alt.Data(values=records))
         .mark_arc(innerRadius=55)
         .encode(
             theta=alt.Theta("value_usd:Q", stack=True),
-            color=alt.Color("group:N", sort="-y", legend=alt.Legend(title=None, orient="bottom")),
+            color=alt.Color("group:N", legend=alt.Legend(title=None, orient="bottom")),
             order=alt.Order("value_usd:Q", sort="descending"),
             tooltip=[
                 alt.Tooltip("group:N", title="Grupo"),
@@ -665,9 +669,9 @@ def _section_execution(conn, settings) -> None:
         if ch_cat is not None or ch_asset is not None:
             g1, g2 = st.columns(2)
             if ch_cat is not None:
-                g1.altair_chart(ch_cat, use_container_width=True)
+                g1.altair_chart(ch_cat, width="stretch")
             if ch_asset is not None:
-                g2.altair_chart(ch_asset, use_container_width=True)
+                g2.altair_chart(ch_asset, width="stretch")
             st.caption(
                 "Donut por **categoría de tesis**: hace visible la concentración disfrazada de "
                 "diversificación (§5) — varias posiciones RWA (LINK/ONDO/XLM/HBAR) cuentan como una "

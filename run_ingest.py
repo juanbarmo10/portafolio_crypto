@@ -42,7 +42,9 @@ from ingest.fred_releases import FredReleasesIngester
 log = get_logger(__name__)
 
 
-def build_ingesters(settings: Settings, public: bool = False) -> list[Ingester]:
+def build_ingesters(
+    settings: Settings, public: bool = False, full_history: bool = False
+) -> list[Ingester]:
     """Instantiate the registered ingesters, skipping any that cannot run.
 
     FRED needs FRED_API_KEY; if it is absent that ingester is skipped with a
@@ -71,8 +73,9 @@ def build_ingesters(settings: Settings, public: bool = False) -> list[Ingester]:
         log.info("Public ingest: skipping the Binance account sync (no private holdings).")
     else:
         # Read-only Binance account sync (holdings + trades); needs API keys.
+        # full_history: deep Convert/Earn/capital-flows reconstruction (--backfill only).
         try:
-            ingesters.append(BinanceAccountIngester(settings))
+            ingesters.append(BinanceAccountIngester(settings, full_history=full_history))
         except RuntimeError as exc:
             log.warning("Skipping Binance account ingester: %s", exc)
     return ingesters
@@ -132,9 +135,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.backfill:
             filled = 0
-            for ingester in build_ingesters(settings, public=args.public):
-                if hasattr(ingester, "fetch_history"):
+            # full_history=True -> deep Convert/Earn/capital-flows reconstruction (slow, once).
+            for ingester in build_ingesters(settings, public=args.public, full_history=True):
+                if hasattr(ingester, "fetch_history"):  # CoinGecko daily price history
                     filled += upsert_observations(conn, ingester.fetch_history())
+                if hasattr(ingester, "fetch_trades"):  # deep Convert history -> cost basis
+                    upsert_trades(conn, ingester.fetch_trades())
+                if hasattr(ingester, "fetch_capital_flows"):
+                    upsert_capital_flows(conn, ingester.fetch_capital_flows())
             log.info("Backfill complete: %d historical observations upserted.", filled)
             return 0
 

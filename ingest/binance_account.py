@@ -223,8 +223,13 @@ class BinanceAccountIngester(Ingester):
 
     source = "binance"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, full_history: bool = False) -> None:
         """Build a read-only ccxt client from BINANCE_API_KEY/SECRET.
+
+        Args:
+            full_history: deep reconstruction (Convert/Earn/capital flows over
+                ``history_since_days``) — slow, use only for ``run_ingest.py --backfill``.
+                Daily runs use the short ``account_recent_days`` window so they stay fast.
 
         Raises:
             RuntimeError: If the API keys are not set (runner skips this ingester).
@@ -233,9 +238,12 @@ class BinanceAccountIngester(Ingester):
         cfg = settings.source("binance_account")
         self._quote: str = cfg.get("quote", "USDT")
         self._trades_since_days: int = int(cfg.get("trades_since_days", 180))
-        # Historical reconstructions (Convert, Earn rewards, capital flows) want the full
-        # history, not just the recent spot-trade window — older Converts are cost basis too.
-        self._history_since_days: int = int(cfg.get("history_since_days", 365))
+        # Deep history (Convert/Earn/capital flows) is chunked into many API calls; running
+        # it every day is slow, so daily uses a short window and --backfill goes deep.
+        history_days = int(cfg.get("history_since_days", 365))
+        self._account_days: int = history_days if full_history else int(
+            cfg.get("account_recent_days", 60)
+        )
         self._timeout: int = int(cfg.get("request_timeout_ms", 20000))
         self._wallets: list[str] = cfg.get("wallets", ["spot", "funding", "earn"])
         self._tracked: list[str] = [a["symbol"] for a in settings.assets]
@@ -270,7 +278,7 @@ class BinanceAccountIngester(Ingester):
         chunked; per-window failures are isolated and the rest still sum.
         """
         now = self._exchange.milliseconds()
-        since = now - self._history_since_days * 24 * 3600 * 1000
+        since = now - self._account_days * 24 * 3600 * 1000
         window = 30 * 24 * 3600 * 1000
         responses: list[object] = []
         start = since
@@ -424,7 +432,7 @@ class BinanceAccountIngester(Ingester):
 
         spot_n = len(rows)
         try:
-            convert_since = self._exchange.milliseconds() - self._history_since_days * 24 * 3600 * 1000
+            convert_since = self._exchange.milliseconds() - self._account_days * 24 * 3600 * 1000
             rows.extend(parse_convert(self._fetch_convert_raw(convert_since)))
         except Exception:  # noqa: BLE001 — convert must not sink the spot trades
             log.exception("Binance convert fetch failed")
@@ -446,7 +454,7 @@ class BinanceAccountIngester(Ingester):
         fx = {k.upper(): float(v) for k, v in (cfg.get("fx_to_usd", {}) or {}).items()}
         fx.setdefault("USD", 1.0)
         now = self._exchange.milliseconds()
-        since = now - self._history_since_days * 24 * 3600 * 1000
+        since = now - self._account_days * 24 * 3600 * 1000
         window = 90 * 24 * 3600 * 1000
         rows: list[dict[str, Any]] = []
         for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):

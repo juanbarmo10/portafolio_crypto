@@ -128,9 +128,10 @@ python run_ingest.py --dry-run
 # se puebla solo si FRED_API_KEY está configurada (si no, se salta con warning).
 python run_ingest.py
 
-# Backfill histórico de precios (una vez): 365 d diarios por activo (CoinGecko
-# /market_chart). Da historia real a variaciones 24h/7d/30d, drill-down y al baseline
-# del tracker DCA. Resiliente al rate limit (reintenta/salta activo); idempotente.
+# Backfill histórico (una vez, lento): precios diarios 365 d por activo (CoinGecko
+# /market_chart) + reconstrucción profunda de la cuenta Binance (Convert, flujos de
+# capital sobre `history_since_days`). El run diario usa una ventana corta
+# (`account_recent_days`, 60 d) para ser rápido; el histórico profundo va aquí.
 python run_ingest.py --backfill
 
 # Dashboard (requiere el extra ".[app]"). Lanzador de un comando (usa el venv):

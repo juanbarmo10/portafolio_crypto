@@ -50,6 +50,9 @@ from transform.indicators import (
     thesis_invalidation_table,
     thesis_tvl_table,
     value_accrual_table,
+    wallet_pnl_history,
+    wallet_pnl_table,
+    wallet_value_history,
 )
 from transform.rally_quality import (
     RALLY_CAPITULATION,
@@ -84,6 +87,13 @@ def _fmt_usd(x: float | None) -> str:
 def _fmt_ratio(x: float | None) -> str:
     """Format a plain ratio to two decimals, or an em dash when missing."""
     return "—" if x is None or pd.isna(x) else f"{x:.2f}"
+
+
+def _fmt_signed_usd(x: float | None) -> str:
+    """Signed USD ('+$12.50' / '-$3.00' / '—') so _color_by_sign can tint it."""
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{'+' if x >= 0 else '-'}${abs(x):,.2f}"
 
 
 def _fmt_big_usd(x: float | None) -> str:
@@ -909,6 +919,9 @@ def _section_execution(conn, settings) -> None:
                 "sola apuesta. `Efectivo` = stablecoins; `Otros` = activos fuera de sección 5 (p. ej. WBETH)."
             )
 
+    # --- PnL per token + hold-simulation history -----------------------------
+    _wallet_pnl_view(conn, settings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -930,6 +943,78 @@ def _section_execution(conn, settings) -> None:
         )
 
     _dca_baseline_view(conn, settings)
+
+
+def _wallet_pnl_view(conn, settings) -> None:
+    """Per-token unrealized PnL + hold-simulation value/PnL history (level 4)."""
+    df = wallet_pnl_table(conn, settings)
+    st.subheader("PnL por activo")
+    if df.empty:
+        st.caption("Sin holdings valorables. Sincroniza la cuenta (`python run_ingest.py`).")
+        return
+
+    tv = df.attrs.get("total_value_usd", 0.0)
+    tc = df.attrs.get("total_cost_usd", 0.0)
+    tp = df.attrs.get("total_pnl_usd", 0.0)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Valor (sin efectivo)", _fmt_usd(tv))
+    c2.metric("Coste (posiciones con base)", _fmt_usd(tc))
+    c3.metric("PnL no realizado", _fmt_signed_usd(tp), delta=f"{tp / tc * 100:+.1f}%" if tc else None)
+
+    show = pd.DataFrame(
+        {
+            "Logo": [settings.meta_for(s).get("logo_url") or "" for s in df["symbol"]],
+            "Activo": df["symbol"],
+            "Cantidad": df["amount"].map(_fmt_amount),
+            "Entrada media": df["avg_price"].map(_fmt_usd),
+            "Valor": df["value_usd"].map(_fmt_usd),
+            "Coste": df["cost_usd"].map(_fmt_usd),
+            "PnL": df["pnl_usd"].map(_fmt_signed_usd),
+            "PnL %": df["pnl_pct"].map(_fmt_change),
+            "Base": df["source"].map(lambda s: s if s else "—"),
+        }
+    )
+    styler = show.style.map(_color_by_sign, subset=["PnL", "PnL %"])
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Entrada media": st.column_config.TextColumn(
+                help="Precio medio de entrada. `trades` = de tus operaciones reales; `manual` = "
+                "de `cost_basis` en config/settings.local.yaml (para tokens sin operaciones)."
+            ),
+            "Base": st.column_config.TextColumn(help="Origen del coste: trades | manual | — (sin coste)."),
+        },
+    )
+    missing = list(df[df["cost_usd"].isna()]["symbol"])
+    if missing:
+        st.caption(
+            f"Sin coste para **{', '.join(missing)}** — añade `cost_basis` en "
+            "`config/settings.local.yaml` (ver `.example`) para calcular su PnL."
+        )
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("**Valor de la cartera (histórico)**")
+        vh = wallet_value_history(conn, settings)
+        if vh.empty:
+            st.caption("Sin histórico de precios (ejecuta `python run_ingest.py --backfill`).")
+        else:
+            st.line_chart(vh.rename("Valor USD"), height=260)
+    with g2:
+        st.markdown("**PnL no realizado (histórico)**")
+        ph = wallet_pnl_history(conn, settings)
+        if ph.empty:
+            st.caption("Sin coste conocido para ninguna posición (añade `cost_basis`).")
+        else:
+            st.line_chart(ph.rename("PnL USD"), height=260)
+    st.caption(
+        "Los gráficos valoran tus tenencias **actuales** a precios históricos (simulación de "
+        "*mantener*): **no** es el valor real que tuviste en el pasado — los snapshots de balance "
+        "solo empiezan al conectar la cuenta. Diario, sin intradía (sección 11)."
+    )
 
 
 def _dca_baseline_view(conn, settings) -> None:

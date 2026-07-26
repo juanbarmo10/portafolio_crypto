@@ -691,6 +691,152 @@ def dca_vs_baseline_table(conn: sqlite3.Connection, settings: Settings) -> pd.Da
     return df
 
 
+def _cid_for_symbol(symbol: str, settings: Settings) -> str | None:
+    """CoinGecko id for a held symbol (tracked asset or a price alias like WBETH)."""
+    for asset in settings.assets:
+        if asset["symbol"] == symbol:
+            return asset["coingecko_id"]
+    aliases = settings.source("binance_account").get("price_aliases", {}) or {}
+    return aliases.get(symbol)
+
+
+def position_cost_basis(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame
+) -> dict[str, dict[str, Any]]:
+    """Per-symbol **average entry price** (USD/token) + source. Trades win over manual.
+
+    Cost is modeled as ``avg_price × current amount`` so it stays consistent with the
+    current holding even when trades cover only part of it (BTC: 5 fills but more held
+    via earn/Convert) — the trade average is extrapolated to the whole position. Manual
+    entries (Convert/wrapped/old buys) live in the gitignored ``settings.local.yaml``
+    under ``binance_account.cost_basis`` as ``{avg_price}`` or ``{invested_usd}``.
+
+    Returns ``{symbol: {"avg_price": float, "source": "trades"|"manual"}}``.
+    """
+    amount_by_symbol = {r["asset"]: r["amount"] for r in holdings.to_dict("records")}
+    out: dict[str, dict[str, Any]] = {}
+    tagg: dict[str, dict[str, float]] = {}
+    for symbol, side, amount, cost in conn.execute(
+        "SELECT symbol, side, amount, cost FROM trades"
+    ).fetchall():
+        base = symbol.split("/")[0]
+        if base in STABLECOINS:
+            continue
+        t = tagg.setdefault(base, {"invested": 0.0, "tokens": 0.0})
+        sign = 1.0 if side == "buy" else -1.0
+        t["invested"] += sign * (cost or 0.0)
+        t["tokens"] += sign * (amount or 0.0)
+    for base, t in tagg.items():
+        if t["tokens"] > 0 and t["invested"] > 0:
+            out[base] = {"avg_price": t["invested"] / t["tokens"], "source": "trades"}
+
+    manual = settings.source("binance_account").get("cost_basis", {}) or {}
+    for symbol, spec in manual.items():
+        if symbol in out or not isinstance(spec, dict):
+            continue
+        if spec.get("avg_price") is not None:
+            out[symbol] = {"avg_price": float(spec["avg_price"]), "source": "manual"}
+        elif spec.get("invested_usd") is not None:
+            amt = amount_by_symbol.get(symbol)
+            if amt:
+                out[symbol] = {"avg_price": float(spec["invested_usd"]) / amt, "source": "manual"}
+    return out
+
+
+def wallet_pnl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Per-holding unrealized PnL: current value vs. cost basis (trades or manual). Level 4.
+
+    Cash/stablecoins are excluded (no PnL). Tokens without a cost basis show None PnL
+    (honest — add it in settings.local.yaml). attrs carry portfolio totals over positions
+    that have a known cost basis.
+    """
+    holdings = holdings_table(conn, settings)
+    cols = ["symbol", "amount", "avg_price", "value_usd", "cost_usd", "pnl_usd", "pnl_pct", "source"]
+    if holdings.empty:
+        return pd.DataFrame(columns=cols)
+    cost = position_cost_basis(conn, settings, holdings)
+    rows: list[dict[str, Any]] = []
+    for r in holdings.to_dict("records"):
+        if r["is_cash"]:
+            continue
+        amount, price, value = r["amount"], r["price_usd"], r["value_usd"]
+        cb = cost.get(r["asset"])
+        avg = cb["avg_price"] if cb else None
+        cost_usd = (avg * amount) if (avg is not None and amount is not None) else None
+        pnl = (value - cost_usd) if (cost_usd is not None and value is not None) else None
+        pnl_pct = ((price / avg - 1.0) * 100.0) if (avg and price) else None
+        rows.append(
+            {
+                "symbol": r["asset"],
+                "amount": amount,
+                "avg_price": avg,
+                "value_usd": value,
+                "cost_usd": cost_usd,
+                "pnl_usd": pnl,
+                "pnl_pct": pnl_pct,
+                "source": cb["source"] if cb else None,
+            }
+        )
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.sort_values("value_usd", ascending=False, na_position="last").reset_index(drop=True)
+        costed = df[df["cost_usd"].notna()]
+        df.attrs["total_value_usd"] = float(df["value_usd"].sum(skipna=True))
+        df.attrs["total_cost_usd"] = float(costed["cost_usd"].sum()) if not costed.empty else 0.0
+        df.attrs["total_pnl_usd"] = float(costed["pnl_usd"].sum()) if not costed.empty else 0.0
+    return df
+
+
+def _holdings_value_matrix(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame
+) -> tuple[pd.DataFrame, float]:
+    """[date × symbol] USD value of current non-cash holdings at historical prices + cash.
+
+    Basis for the hold-simulation charts: current balances valued along each token's
+    stored daily price series (a 'what if I'd held today's portfolio' view — not literal
+    past value, since real balance snapshots only start when the account sync began).
+    """
+    cols: dict[str, pd.Series] = {}
+    for r in holdings.to_dict("records"):
+        if r["is_cash"] or r["amount"] is None:
+            continue
+        cid = _cid_for_symbol(r["asset"], settings)
+        if cid is None:
+            continue
+        price_hist = series_history(conn, "coingecko", f"{cid}:price").dropna()
+        if not price_hist.empty:
+            cols[r["asset"]] = r["amount"] * price_hist
+    matrix = pd.concat(cols, axis=1).sort_index().ffill() if cols else pd.DataFrame()
+    cash = float(holdings.loc[holdings["is_cash"], "value_usd"].sum(skipna=True))
+    return matrix, cash
+
+
+def wallet_value_history(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+    """Daily total value of *current* holdings at historical prices (hold-simulation)."""
+    holdings = holdings_table(conn, settings)
+    if holdings.empty:
+        return pd.Series(dtype="float64")
+    matrix, cash = _holdings_value_matrix(conn, settings, holdings)
+    if matrix.empty:
+        return pd.Series(dtype="float64")
+    return (matrix.sum(axis=1, min_count=1) + cash).dropna()
+
+
+def wallet_pnl_history(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+    """Daily unrealized PnL of positions with a known cost basis (value − total cost)."""
+    holdings = holdings_table(conn, settings)
+    if holdings.empty:
+        return pd.Series(dtype="float64")
+    cost = position_cost_basis(conn, settings, holdings)
+    matrix, _ = _holdings_value_matrix(conn, settings, holdings)
+    costed = [c for c in matrix.columns if c in cost]
+    if not costed:
+        return pd.Series(dtype="float64")
+    amount_by_symbol = {r["asset"]: r["amount"] for r in holdings.to_dict("records")}
+    total_cost = sum(cost[c]["avg_price"] * amount_by_symbol[c] for c in costed)
+    return (matrix[costed].sum(axis=1, min_count=1) - total_cost).dropna()
+
+
 def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Aggregate real executed trades (level 4): invested, proceeds, fees, count.
 

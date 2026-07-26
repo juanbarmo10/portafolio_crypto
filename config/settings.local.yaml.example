@@ -16,3 +16,16 @@
 #     manual_holdings:
 #       - {asset: BTC, amount: 0.002, note: "spot grid bot"}
 #       - {label: "Trading bots", value_usd: 200, note: "spot grid bots (read-only key can't see)"}
+
+# Cost basis for PnL on tokens WITHOUT trade records (bought via Convert, wrapped, or
+# before the trade-lookback window). BTC and any traded token derive cost from `trades`
+# automatically; list only the gaps here. Per token, give EITHER:
+#   avg_price:    average buy price in USD (cost = avg_price x current amount held), or
+#   invested_usd: total USD you put in (used as-is).
+#
+# sources:
+#   binance_account:
+#     cost_basis:
+#       XRP:   {avg_price: 0.52}
+#       WBETH: {invested_usd: 100}
+#       BNB:   {avg_price: 600}

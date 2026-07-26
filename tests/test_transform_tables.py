@@ -26,6 +26,8 @@ from transform.indicators import (
     thesis_invalidation_table,
     thesis_tvl_table,
     value_accrual_table,
+    wallet_pnl_table,
+    wallet_value_history,
 )
 
 
@@ -440,6 +442,79 @@ def test_dca_vs_baseline_no_history_no_baseline(conn, settings) -> None:
     btc = dca_vs_baseline_table(conn, settings).iloc[0]
     assert btc["baseline_avg"] is None
     assert btc["edge_pp"] is None
+
+
+def test_wallet_pnl_from_trades(conn, settings) -> None:
+    # 0.5 BTC bought at 100 (avg). Held 0.5, current 200 -> +100% / +$50.
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [
+                {"trade_id": "1", "exchange": "binance", "symbol": "BTC/USDT", "side": "buy",
+                 "ts": "2026-01-01T00:00:00+00:00", "price": 100.0, "amount": 0.5, "cost": 50.0,
+                 "fee": 0.0, "fee_currency": "USDT"},
+            ]
+        ),
+    )
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 200.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.5, source="binance"),
+            ]
+        ),
+    )
+    btc = wallet_pnl_table(conn, settings).query("symbol == 'BTC'").iloc[0]
+    assert btc["avg_price"] == pytest.approx(100.0)
+    assert btc["cost_usd"] == pytest.approx(50.0)  # avg 100 * amount 0.5
+    assert btc["value_usd"] == pytest.approx(100.0)
+    assert btc["pnl_usd"] == pytest.approx(50.0)
+    assert btc["pnl_pct"] == pytest.approx(100.0)
+    assert btc["source"] == "trades"
+
+
+def test_wallet_pnl_manual_cost_basis(conn, settings) -> None:
+    settings.raw["sources"]["binance_account"]["cost_basis"] = {
+        "XRP": {"avg_price": 0.50},
+        "WBETH": {"invested_usd": 100.0},
+    }
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("ripple:price", "2026-07-23T00:00:00+00:00", 0.60),
+                _obs("XRP:balance:spot", "2026-07-23T00:00:00+00:00", 100.0, source="binance"),
+                _obs("wrapped-beacon-eth:price", "2026-07-23T00:00:00+00:00", 2000.0),
+                _obs("WBETH:balance:spot", "2026-07-23T00:00:00+00:00", 0.05, source="binance"),
+            ]
+        ),
+    )
+    df = wallet_pnl_table(conn, settings)
+    xrp = df.query("symbol == 'XRP'").iloc[0]
+    assert xrp["source"] == "manual"
+    assert xrp["pnl_pct"] == pytest.approx(20.0)  # 0.60/0.50 - 1
+    wbeth = df.query("symbol == 'WBETH'").iloc[0]
+    assert wbeth["avg_price"] == pytest.approx(2000.0)  # invested 100 / amount 0.05
+    assert wbeth["pnl_pct"] == pytest.approx(0.0)
+
+
+def test_wallet_value_history_holds_current_at_historical_prices(conn, settings) -> None:
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-20T00:00:00+00:00", 100.0),
+                _obs("bitcoin:price", "2026-07-21T00:00:00+00:00", 200.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 2.0, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 50.0, source="binance"),
+            ]
+        ),
+    )
+    vh = wallet_value_history(conn, settings)  # 2 BTC * price + 50 cash
+    assert len(vh) == 2
+    assert vh.iloc[0] == pytest.approx(250.0)  # 2*100 + 50
+    assert vh.iloc[-1] == pytest.approx(450.0)  # 2*200 + 50
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

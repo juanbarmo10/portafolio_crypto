@@ -85,7 +85,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 136) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 150) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
 
@@ -231,6 +231,37 @@ Sin timers instalados, el equivalente manual es `./run_daily.sh` (local) y, para
 `DATABASE_URL='postgresql://…neon…' ./run_neon_sync.sh` (pasa la URL en la misma línea para
 evitar el problema del `&` al sourcear).
 
+## Alertas por Telegram
+
+Motor de alertas declarativo (`run_alerts.py`): evalúa reglas escritas de antemano contra la
+DB y envía a Telegram **solo** eventos accionables (diseño *pull*, anti-over-trading — sección 2).
+El timer diario ya ejecuta `run_alerts.py`, así que una vez configurado llegan solas. Dedup por
+`alerts_log` (una vez por condición/día); un envío fallido se reintenta hasta entregarse.
+
+**Reglas** (configurables en `config/settings.yaml` → `alerts.rules`; umbrales en `indicators`):
+
+| Regla | Dispara cuando | Nivel | Parámetro |
+|---|---|---|---|
+| `macro_release_soon` | Release macro (CPI/PCE/NFP) o FOMC en ≤N días → *"no ejecutes el DCA aún"* | 1 | `within_days: 3` |
+| `etf_outflow_streak` | Flujos ETF netos negativos ≥N días seguidos | 2 | `min_days: 3` |
+| `funding_crowded` | Funding z-score \|z\| ≥ umbral (posicionamiento hacinado) | 2 | `z_threshold: 2.0` |
+| `tvl_drop` | TVL de una tesis cae ≥X% en 7 d (posible invalidación) | 3 | `pct: 20` |
+| `unlock_soon` | Un activo desbloquea tokens en ≤N días | 3 | `within_days: 7` |
+| `monthly_dca_reminder` | Día del mes ≥ N → recordatorio de aporte con contexto de niveles 1-2 | 4 | `day_of_month: 1` |
+
+**Configuración (una vez):**
+1. Crea un bot con **@BotFather** en Telegram (`/newbot`) → copia el **token**.
+2. Envíale un mensaje a tu bot; obtén tu **chat id** (p. ej. con **@userinfobot**).
+3. Ponlos en `config/.env` (ignorado por git, nunca se sube ni se despliega):
+   ```
+   TELEGRAM_TOKEN=8123456789:AAF...
+   TELEGRAM_CHAT_ID=123456789
+   ```
+4. Prueba: `python run_alerts.py` (envía las alertas nuevas) o `--dry-run` (solo loguea).
+
+Sin `TELEGRAM_TOKEN`/`TELEGRAM_CHAT_ID`, todo el pipeline sigue funcionando en **dry-run**
+(las alertas se loguean, no se envían).
+
 ## Validación de señales (resultado preliminar)
 
 > Documentar los resultados de validación **incluidos los que no funcionan** es parte del
@@ -285,7 +316,7 @@ interna del proyecto.
 ## Tests
 
 ```bash
-pytest            # suite completa (136)
+pytest            # suite completa (150)
 ruff check .      # linting
 ```
 

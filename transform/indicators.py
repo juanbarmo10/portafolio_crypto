@@ -810,14 +810,17 @@ def position_cost_basis(
     return out
 
 
-def wallet_pnl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+def wallet_pnl_table(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """Per-holding unrealized PnL: current value vs. cost basis (trades or manual). Level 4.
 
     Cash/stablecoins are excluded (no PnL). Tokens without a cost basis show None PnL
     (honest — add it in settings.local.yaml). attrs carry portfolio totals over positions
     that have a known cost basis.
     """
-    holdings = holdings_table(conn, settings)
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
     cols = ["symbol", "amount", "avg_price", "value_usd", "cost_usd", "pnl_usd", "pnl_pct", "source"]
     if holdings.empty:
         return pd.DataFrame(columns=cols)
@@ -878,9 +881,12 @@ def _holdings_value_matrix(
     return matrix, cash
 
 
-def wallet_value_history(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+def wallet_value_history(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.Series:
     """Daily total value of *current* holdings at historical prices (hold-simulation)."""
-    holdings = holdings_table(conn, settings)
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
     if holdings.empty:
         return pd.Series(dtype="float64")
     matrix, cash = _holdings_value_matrix(conn, settings, holdings)
@@ -889,9 +895,12 @@ def wallet_value_history(conn: sqlite3.Connection, settings: Settings) -> pd.Ser
     return (matrix.sum(axis=1, min_count=1) + cash).dropna()
 
 
-def wallet_pnl_history(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+def wallet_pnl_history(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.Series:
     """Daily unrealized PnL of positions with a known cost basis (value − total cost)."""
-    holdings = holdings_table(conn, settings)
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
     if holdings.empty:
         return pd.Series(dtype="float64")
     cost = position_cost_basis(conn, settings, holdings)

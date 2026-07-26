@@ -921,7 +921,7 @@ def _section_execution(conn, settings) -> None:
             )
 
     # --- PnL per token + hold-simulation history -----------------------------
-    _wallet_pnl_view(conn, settings)
+    _wallet_pnl_view(conn, settings, holdings)
 
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
@@ -946,9 +946,9 @@ def _section_execution(conn, settings) -> None:
     _dca_baseline_view(conn, settings)
 
 
-def _wallet_pnl_view(conn, settings) -> None:
+def _wallet_pnl_view(conn, settings, holdings) -> None:
     """Per-token unrealized PnL + hold-simulation value/PnL history (level 4)."""
-    df = wallet_pnl_table(conn, settings)
+    df = wallet_pnl_table(conn, settings, holdings)
     st.subheader("PnL por activo")
     if df.empty:
         st.caption("Sin holdings valorables. Sincroniza la cuenta (`python run_ingest.py`).")
@@ -1011,14 +1011,14 @@ def _wallet_pnl_view(conn, settings) -> None:
     g1, g2 = st.columns(2)
     with g1:
         st.markdown("**Valor de la cartera (histórico)**")
-        vh = wallet_value_history(conn, settings)
+        vh = wallet_value_history(conn, settings, holdings)
         if vh.empty:
             st.caption("Sin histórico de precios (ejecuta `python run_ingest.py --backfill`).")
         else:
             st.line_chart(vh.rename("Valor USD"), height=260)
     with g2:
         st.markdown("**PnL no realizado (histórico)**")
-        ph = wallet_pnl_history(conn, settings)
+        ph = wallet_pnl_history(conn, settings, holdings)
         if ph.empty:
             st.caption("Sin coste conocido para ninguna posición (añade `cost_basis`).")
         else:

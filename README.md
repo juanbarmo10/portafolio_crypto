@@ -1,5 +1,7 @@
 # cryptodash — Dashboard cripto-macro
 
+[![CI](https://github.com/juanbarmo10/portafolio_crypto/actions/workflows/ci.yml/badge.svg)](https://github.com/juanbarmo10/portafolio_crypto/actions/workflows/ci.yml)
+
 Panel personal de análisis cripto-macro con fuentes de datos **gratuitas**. Ingesta
 macro (FRED), precios (CoinGecko) y TVL (DefiLlama) en SQLite, calcula indicadores
 derivados y los presenta en Streamlit, con alertas por Telegram y un framework de

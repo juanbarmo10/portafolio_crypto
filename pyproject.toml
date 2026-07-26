@@ -9,12 +9,14 @@ license = { text = "MIT" }
 # Dependencies are grouped by roadmap phase (see CLAUDE.md section 8).
 # Only Phase 0/1 runtime deps are declared as required so the scaffold stays
 # installable before later ingesters exist. Ask before adding new deps (section 11).
+# Upper bounds cap the next major to avoid silent breakage on a fresh install: e.g.
+# pandas 3.0 broke Altair's DataFrame serialization (worked around in app/dashboard.py).
 dependencies = [
-    "pyyaml>=6.0",       # config/settings.yaml
-    "python-dotenv>=1.0", # load config/.env
-    "requests>=2.31",    # coingecko / defillama / FRED REST (phase 1)
-    "pandas>=2.1",       # transforms + fetch() DataFrame contract
-    "numpy>=1.26",       # indicators
+    "pyyaml>=6.0,<7",        # config/settings.yaml
+    "python-dotenv>=1.0,<2", # load config/.env
+    "requests>=2.31,<3",     # coingecko / defillama / FRED REST (phase 1)
+    "pandas>=2.1,<4",        # transforms + fetch() DataFrame contract (3.x supported)
+    "numpy>=1.26,<3",        # indicators
 ]
 # NOTE: FRED is accessed via its REST endpoint directly (ingest/fred.py) rather
 # than the `fredapi` wrapper, because we need output_type=4 (initial release only)
@@ -24,22 +26,24 @@ dependencies = [
 [project.optional-dependencies]
 # Phase 2+ ingest (derivatives, scraping) — not needed for the scaffold.
 markets = [
-    "ccxt>=4.2",         # funding + open interest
-    "lxml>=5.0",         # pandas.read_html backend for scrapers
-    "websockets>=12.0",  # binance liquidations stream
+    "ccxt>=4.2,<5",         # funding + open interest
+    "lxml>=5.0,<6",         # pandas.read_html backend for scrapers
+    "websockets>=12.0,<16", # binance liquidations stream
 ]
-# Dashboard (phase 1 UI).
+# Dashboard (phase 1 UI). Altair is declared explicitly (we build charts with it in
+# app/dashboard.py) rather than relying on Streamlit's transitive pin.
 app = [
-    "streamlit>=1.30",
+    "streamlit>=1.30,<2",
+    "altair>=5,<7",
 ]
 # PostgreSQL backend (phase 4: cloud deploy / hosted DB via DATABASE_URL).
 postgres = [
-    "psycopg[binary]>=3.1",
+    "psycopg[binary]>=3.1,<4",
 ]
 # Development tooling.
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.3",
+    "pytest>=8.0,<9",
+    "ruff>=0.3,<1",
 ]
 
 [build-system]

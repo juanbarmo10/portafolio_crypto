@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (runtime + dashboard + markets + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,app,markets]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Tests (pytest)
+        # No secrets/network needed: parsers are pure (monkeypatched), the DB is a local
+        # temp SQLite, and key-dependent ingesters are skipped when the keys are absent.
+        run: pytest -q

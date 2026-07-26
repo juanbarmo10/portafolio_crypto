@@ -7,10 +7,9 @@ macro (FRED), precios (CoinGecko) y TVL (DefiLlama) en SQLite, calcula indicador
 derivados y los presenta en Streamlit, con alertas por Telegram y un framework de
 validación estadística de señales.
 
-El contexto completo del proyecto (filosofía de diseño, activos, tesis, hoja de ruta
-por fases y trampas del dominio) y las **decisiones técnicas y ecuaciones** (formulación,
-efecto en cripto, uso y qué validar) se documentan en archivos de diseño internos, fuera del
-repositorio público.
+La **arquitectura y las decisiones de diseño** (capas, esquema, point-in-time, metodología de
+indicadores y validación) están en **[ARCHITECTURE.md](ARCHITECTURE.md)**. El contexto operativo
+detallado con datos personales se mantiene en documentación interna, fuera del repositorio público.
 
 ## Ejecutar el proyecto (resumen)
 

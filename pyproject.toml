@@ -71,3 +71,9 @@ target-version = "py311"
 # dashboard.py inserts the repo root into sys.path before importing project packages
 # (needed on Streamlit Cloud); those imports carry inline `# noqa: E402` rather than a
 # per-file-ignore, so suppression doesn't depend on config parsing across ruff versions.
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's *default* selection expands between versions (e.g.
+# 0.16 promoted many rules to stable), which fails CI when the runner installs a newer
+# ruff than the dev used. Selecting rules explicitly makes lint deterministic.
+select = ["E4", "E7", "E9", "F"]

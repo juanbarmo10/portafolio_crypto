@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from ingest.binance_account import TRADE_COLUMNS, parse_convert, parse_earn, parse_trades
+from ingest.binance_account import (
+    CAPITAL_FLOW_COLUMNS,
+    TRADE_COLUMNS,
+    parse_convert,
+    parse_earn,
+    parse_fiat_flows,
+    parse_trades,
+)
 
 
 def _ccxt_trade(**overrides) -> dict:
@@ -64,6 +71,27 @@ def test_parse_convert_buy_sell_and_skips() -> None:
     sell = rows[1]
     assert sell["symbol"] == "BNB/USDT" and sell["side"] == "sell"
     assert sell["amount"] == 0.5 and sell["cost"] == 300.0
+
+
+def test_parse_fiat_flows_usd_and_unconverted() -> None:
+    records = [
+        {"orderNo": "a", "fiatCurrency": "USD", "amount": "100", "status": "Completed",
+         "createTime": 1_700_000_000_000},
+        {"orderNo": "b", "fiatCurrency": "COP", "amount": "400000", "status": "Completed",
+         "createTime": 1_700_100_000_000},  # converted via fx
+        {"orderNo": "c", "fiatCurrency": "EUR", "amount": "50", "status": "Completed",
+         "createTime": 1_700_200_000_000},  # no rate -> unconverted (usd None)
+        {"orderNo": "d", "fiatCurrency": "USD", "amount": "9", "status": "Processing",
+         "createTime": 1_700_300_000_000},  # not completed -> skipped
+    ]
+    rows = parse_fiat_flows(records, "deposit", {"USD": 1.0, "COP": 0.00025})
+    assert [r["flow_id"] for r in rows] == ["binance:deposit:a", "binance:deposit:b",
+                                            "binance:deposit:c"]
+    assert set(CAPITAL_FLOW_COLUMNS) <= set(rows[0])
+    assert rows[0]["usd_value"] == 100.0
+    assert rows[1]["usd_value"] == pytest.approx(400000 * 0.00025)  # 100
+    assert rows[2]["usd_value"] is None  # EUR unconverted
+    assert all(r["kind"] == "deposit" for r in rows)
 
 
 def test_parse_trades_skips_without_id_or_timestamp() -> None:

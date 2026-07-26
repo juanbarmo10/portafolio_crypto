@@ -14,8 +14,9 @@ import pandas as pd
 import pytest
 
 from core.config import load_settings
-from db.loader import init_db, upsert_observations, upsert_trades
+from db.loader import init_db, upsert_capital_flows, upsert_observations, upsert_trades
 from transform.indicators import (
+    capital_deployed_summary,
     dca_status,
     dca_vs_baseline_table,
     execution_summary,
@@ -604,6 +605,30 @@ def test_wallet_value_history_holds_current_at_historical_prices(conn, settings)
     assert len(vh) == 2
     assert vh.iloc[0] == pytest.approx(250.0)  # 2*100 + 50
     assert vh.iloc[-1] == pytest.approx(450.0)  # 2*200 + 50
+
+
+def test_capital_deployed_summary_net_and_idempotent(conn, settings) -> None:
+    flows = pd.DataFrame(
+        [
+            {"flow_id": "binance:deposit:a", "kind": "deposit", "asset": "USD",
+             "amount": 1000.0, "usd_value": 1000.0, "ts": "2026-01-01T00:00:00+00:00"},
+            {"flow_id": "binance:deposit:b", "kind": "deposit", "asset": "COP",
+             "amount": 400000.0, "usd_value": 100.0, "ts": "2026-02-01T00:00:00+00:00"},
+            {"flow_id": "binance:withdraw:c", "kind": "withdraw", "asset": "USD",
+             "amount": 300.0, "usd_value": 300.0, "ts": "2026-03-01T00:00:00+00:00"},
+            {"flow_id": "binance:deposit:d", "kind": "deposit", "asset": "EUR",
+             "amount": 50.0, "usd_value": None, "ts": "2026-04-01T00:00:00+00:00"},  # unconverted
+        ]
+    )
+    assert upsert_capital_flows(conn, flows) == 4
+    upsert_capital_flows(conn, flows)  # re-run: no duplicates (keyed by flow_id)
+    assert conn.execute("SELECT COUNT(*) FROM capital_flows").fetchone()[0] == 4
+
+    s = capital_deployed_summary(conn)
+    assert s["deposits_usd"] == pytest.approx(1100.0)  # 1000 + 100 (EUR excluded)
+    assert s["withdrawals_usd"] == pytest.approx(300.0)
+    assert s["net_deployed_usd"] == pytest.approx(800.0)
+    assert s["unconverted"] == 1
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

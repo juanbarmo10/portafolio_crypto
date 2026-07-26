@@ -970,3 +970,25 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
         "fees_drag_pct": (fees_usd / invested * 100.0) if invested else None,
         "fees_per_trade_usd": (fees_usd / len(trades)) if trades else None,
     }
+
+
+def capital_deployed_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Net fiat capital deployed (deposits − withdrawals, USD) from ``capital_flows``.
+
+    This is the true denominator for return on real contributions (sections 1, 2): what you
+    actually put into the account, independent of how it was later traded. Flows in a
+    currency without an FX rate are counted (``unconverted``) but excluded from the sums.
+    """
+    rows = conn.execute("SELECT kind, usd_value FROM capital_flows").fetchall()
+    if not rows:
+        return {"has_flows": False}
+    deposits = sum(v for k, v in rows if k == "deposit" and v is not None)
+    withdrawals = sum(v for k, v in rows if k == "withdraw" and v is not None)
+    unconverted = sum(1 for _, v in rows if v is None)
+    return {
+        "has_flows": True,
+        "deposits_usd": deposits,
+        "withdrawals_usd": withdrawals,
+        "net_deployed_usd": deposits - withdrawals,
+        "unconverted": unconverted,
+    }

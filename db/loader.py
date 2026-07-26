@@ -210,3 +210,36 @@ def upsert_events(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
         conn.executemany(_UPSERT_EVENT_SQL, records)
     log.info("Upserted %d events.", len(records))
     return len(records)
+
+
+CAPITAL_FLOW_COLUMNS = ["flow_id", "kind", "asset", "amount", "usd_value", "ts"]
+
+_UPSERT_CAPITAL_FLOW_SQL = """
+INSERT INTO capital_flows (flow_id, kind, asset, amount, usd_value, ts, ingested_at)
+VALUES (:flow_id, :kind, :asset, :amount, :usd_value, :ts, :ingested_at)
+ON CONFLICT(flow_id) DO UPDATE SET
+    kind = excluded.kind, asset = excluded.asset, amount = excluded.amount,
+    usd_value = excluded.usd_value, ts = excluded.ts, ingested_at = excluded.ingested_at
+"""
+
+
+def upsert_capital_flows(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """Idempotently upsert fiat/crypto capital flows (keyed by flow_id)."""
+    missing = [c for c in CAPITAL_FLOW_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Capital-flows DataFrame missing required columns: {missing}.")
+    if df.empty:
+        log.info("No capital flows to upsert.")
+        return 0
+    ingested_at = _utc_now_iso()
+    records = []
+    for row in df[CAPITAL_FLOW_COLUMNS].itertuples(index=False):
+        record = {c: getattr(row, c) for c in CAPITAL_FLOW_COLUMNS}
+        for numeric in ("amount", "usd_value"):
+            record[numeric] = None if pd.isna(record[numeric]) else float(record[numeric])
+        record["ingested_at"] = ingested_at
+        records.append(record)
+    with conn:
+        conn.executemany(_UPSERT_CAPITAL_FLOW_SQL, records)
+    log.info("Upserted %d capital flows.", len(records))
+    return len(records)

@@ -38,6 +38,8 @@ TRADE_COLUMNS = [
     "price", "amount", "cost", "fee", "fee_currency",
 ]
 
+CAPITAL_FLOW_COLUMNS = ["flow_id", "kind", "asset", "amount", "usd_value", "ts"]
+
 # Wallet name -> ccxt fetch_balance 'type' param. "earn" is special (Simple Earn
 # positions via sapi); the rest go through fetch_balance.
 _WALLET_TYPE = {
@@ -159,6 +161,41 @@ def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[
                 "cost": cost,
                 "fee": 0.0,
                 "fee_currency": None,
+            }
+        )
+    return rows
+
+
+def parse_fiat_flows(
+    records: list[dict], kind: str, fx_to_usd: dict[str, float]
+) -> list[dict[str, Any]]:
+    """Binance fiat orders -> capital_flows rows (pure, testable).
+
+    ``kind`` is 'deposit' or 'withdraw'. USD value uses ``fx_to_usd`` (USD assumed 1.0);
+    an unknown currency yields usd_value None (unconverted, counted but not summed). Only
+    completed orders are kept. Keyed by orderNo for idempotency.
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if str(rec.get("status", "")).lower() not in ("completed", "successful", "success"):
+            continue
+        order_no = rec.get("orderNo")
+        currency = rec.get("fiatCurrency")
+        amount = _as_float(rec.get("amount"))
+        ts_ms = rec.get("createTime")
+        if order_no is None or not currency or amount is None or not ts_ms:
+            continue
+        rate = fx_to_usd.get(currency.upper())
+        rows.append(
+            {
+                "flow_id": f"binance:{kind}:{order_no}",
+                "kind": kind,
+                "asset": currency.upper(),
+                "amount": amount,
+                "usd_value": (amount * rate) if rate is not None else None,
+                "ts": datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00"
+                ),
             }
         )
     return rows
@@ -326,4 +363,36 @@ class BinanceAccountIngester(Ingester):
             "Binance trades: %d spot fills (%d symbols) + %d convert -> %d total.",
             spot_n, len(symbols), len(rows) - spot_n, len(df),
         )
+        return df
+
+    def fetch_capital_flows(self) -> pd.DataFrame:
+        """Fiat deposits/withdrawals (READ-ONLY) -> capital_flows rows (net capital in/out).
+
+        USD conversion via ``binance_account.fx_to_usd`` config (USD assumed 1.0); non-USD
+        fiat without a rate is stored unconverted. Windowed by 90 days (fiat-orders cap).
+        """
+        cfg = self._settings.source("binance_account")
+        fx = {k.upper(): float(v) for k, v in (cfg.get("fx_to_usd", {}) or {}).items()}
+        fx.setdefault("USD", 1.0)
+        now = self._exchange.milliseconds()
+        since = now - self._trades_since_days * 24 * 3600 * 1000
+        window = 90 * 24 * 3600 * 1000
+        rows: list[dict[str, Any]] = []
+        for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):
+            start = since
+            while start < now:
+                end = min(start + window, now)
+                try:
+                    resp = retry(
+                        lambda s=start, e=end, t=tx_type: self._exchange.sapiGetFiatOrders(
+                            {"transactionType": t, "beginTime": s, "endTime": e, "rows": 500}
+                        ),
+                        exceptions=(ccxt.NetworkError,),
+                    )
+                    rows.extend(parse_fiat_flows(resp.get("data", []) or [], kind, fx))
+                except Exception:  # noqa: BLE001 — isolate per-window failures
+                    log.exception("Binance fiat %s: window %s-%s failed", kind, start, end)
+                start = end
+        df = pd.DataFrame(rows, columns=CAPITAL_FLOW_COLUMNS)
+        log.info("Binance capital flows: %d rows.", len(df))
         return df

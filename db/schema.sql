@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON trades(symbol, ts DESC);
 
+-- Fiat/crypto capital in-and-out of the account (level 4): true net capital deployed,
+-- the correct denominator for portfolio return on real contributions (sections 1, 2).
+CREATE TABLE IF NOT EXISTS capital_flows (
+    flow_id      TEXT PRIMARY KEY,   -- '<source>:<kind>:<orderNo>' (idempotent)
+    kind         TEXT NOT NULL,      -- 'deposit' | 'withdraw'
+    asset        TEXT NOT NULL,      -- fiat/crypto code (e.g. 'USD' | 'COP' | 'USDT')
+    amount       REAL,               -- amount in that asset
+    usd_value    REAL,               -- best-effort USD (null if currency unconverted)
+    ts           TEXT NOT NULL,      -- ISO8601 UTC
+    ingested_at  TEXT NOT NULL
+);
+
 -- Exit rules written BEFORE buying (section 2: discipline by design).
 CREATE TABLE IF NOT EXISTS exit_rules (
     rule_id     TEXT PRIMARY KEY,

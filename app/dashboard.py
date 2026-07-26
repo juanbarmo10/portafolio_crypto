@@ -40,6 +40,7 @@ from db.loader import init_db
 from db.queries import series_history, upcoming_events
 from validation.backtest import funding_zscore_backtest
 from transform.indicators import (
+    capital_deployed_summary,
     dca_status,
     dca_vs_baseline_table,
     execution_summary,
@@ -995,6 +996,25 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
             + ". Lastre material con tickets pequeños (secciones 1, 4): cada compra paga comisión, "
             "así que muchas compras pequeñas erosionan más que pocas grandes."
         )
+
+    cap = capital_deployed_summary(conn)
+    if cap.get("has_flows"):
+        total_val = holdings.attrs.get("total_value_usd", 0.0)  # incl. efectivo
+        net = cap["net_deployed_usd"]
+        roi = (total_val / net - 1) * 100 if net else None
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Capital neto aportado", _fmt_usd(net), help="Depósitos − retiros fiat (USD).")
+        k2.metric("Valor total (incl. efectivo)", _fmt_usd(total_val))
+        k3.metric(
+            "Retorno sobre aportes", "—" if roi is None else f"{roi:+.1f}%",
+            help="Valor total de la cuenta ÷ capital neto aportado − 1. La rentabilidad real "
+            "sobre lo que has ingresado (secciones 1, 2).",
+        )
+        if cap["unconverted"]:
+            st.caption(
+                f"{cap['unconverted']} movimiento(s) fiat sin tasa FX → excluidos del cómputo. "
+                "Añade `fx_to_usd` (p. ej. COP) en `config/settings.local.yaml` para incluirlos."
+            )
 
     show = pd.DataFrame(
         {

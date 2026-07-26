@@ -23,7 +23,13 @@ import sys
 
 from core.config import Settings, load_settings
 from core.logging_setup import configure_logging, get_logger
-from db.loader import init_db, upsert_events, upsert_observations, upsert_trades
+from db.loader import (
+    init_db,
+    upsert_capital_flows,
+    upsert_events,
+    upsert_observations,
+    upsert_trades,
+)
 from ingest.base import Ingester
 from ingest.binance_account import BinanceAccountIngester
 from ingest.coingecko import CoinGeckoIngester
@@ -145,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
                 # ...or calendar events (FRED release dates -> events strip / alerts).
                 if hasattr(ingester, "fetch_events"):
                     upsert_events(conn, ingester.fetch_events())
+                # ...or capital flows (Binance fiat deposits/withdrawals, level 4).
+                if hasattr(ingester, "fetch_capital_flows"):
+                    upsert_capital_flows(conn, ingester.fetch_capital_flows())
             except Exception:  # noqa: BLE001 — log, keep going, fail loudly at the end
                 failures += 1
                 log.exception("Ingester %s failed.", name)

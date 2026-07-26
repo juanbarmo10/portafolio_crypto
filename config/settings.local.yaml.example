@@ -30,3 +30,11 @@
 #       XRP:   {avg_price: 0.52}
 #       WBETH: {invested_usd: 100}
 #       BNB:   {avg_price: 600}
+
+# FX rates (currency -> USD) to value non-USD fiat deposits/withdrawals for "net capital
+# deployed". USD is assumed 1.0. A currency without a rate is counted but not summed.
+#
+# sources:
+#   binance_account:
+#     fx_to_usd:
+#       COP: 0.00024   # ~1 USD ≈ 4100 COP; ajusta al valor actual

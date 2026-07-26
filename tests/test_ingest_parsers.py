@@ -18,8 +18,9 @@ from ingest.defillama import DefiLlamaIngester
 class _FakeResponse:
     """Minimal stand-in for requests.Response."""
 
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         return None
@@ -93,6 +94,8 @@ def test_defillama_parses_protocol_and_chain(monkeypatch) -> None:
     def fake_get(url, **kwargs):
         if "/historicalChainTvl/" in url:
             return _FakeResponse(chain_payload)
+        if "/summary/fees/" in url:
+            return _FakeResponse({"total30d": 3000.0})  # protocol revenue snapshot
         return _FakeResponse(protocol_payload)
 
     monkeypatch.setattr(dl_mod.requests, "get", fake_get)
@@ -107,6 +110,10 @@ def test_defillama_parses_protocol_and_chain(monkeypatch) -> None:
     sui = df[df["series_id"] == "Sui:tvl"]
     assert len(sui) == 2
     assert 520.0 in set(sui["value"])
+    # Revenue snapshot is emitted for protocol slugs (not chains).
+    aave_rev = df[df["series_id"] == "aave:revenue_30d"]
+    assert len(aave_rev) == 1 and set(aave_rev["value"]) == {3000.0}
+    assert df[df["series_id"] == "Sui:revenue_30d"].empty  # chains have no fees entry
     load_settings.cache_clear()
 
 

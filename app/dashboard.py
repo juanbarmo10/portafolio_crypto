@@ -727,7 +727,10 @@ def _value_accrual_view(conn, settings) -> None:
             "symbol": r["symbol"],
             "tvl": r["tvl"],
             "mcap": r["mcap"],
-            "mc_tvl": round(r["mc_tvl"], 3) if r["mc_tvl"] is not None else None,
+            "mc_tvl": round(r["mc_tvl"], 3) if pd.notna(r["mc_tvl"]) else None,
+            # None -> NaN in a DataFrame; convert back so Altair gets valid JSON null.
+            "revenue_ann": r["revenue_ann"] if pd.notna(r.get("revenue_ann")) else None,
+            "mc_revenue": round(r["mc_revenue"], 1) if pd.notna(r.get("mc_revenue")) else None,
         }
         for r in df.to_dict("records")
     ]
@@ -741,6 +744,8 @@ def _value_accrual_view(conn, settings) -> None:
         alt.Tooltip("tvl:Q", title="TVL", format=",.0f"),
         alt.Tooltip("mcap:Q", title="Mcap", format=",.0f"),
         alt.Tooltip("mc_tvl:Q", title="MC/TVL", format=".2f"),
+        alt.Tooltip("revenue_ann:Q", title="Revenue anual", format=",.0f"),
+        alt.Tooltip("mc_revenue:Q", title="MC/Revenue", format=".1f"),
     ]
     pts = alt.Chart(data).mark_circle(size=160, opacity=0.85).encode(
         x=alt.X("tvl:Q", scale=alt.Scale(type="log"), title="TVL (USD, escala log)"),
@@ -762,11 +767,28 @@ def _value_accrual_view(conn, settings) -> None:
     c1, c2 = st.columns([3, 2])
     c1.altair_chart((pts + labels).properties(height=360), width="stretch")
     c2.altair_chart(bar.properties(height=360), width="stretch")
+
+    # MC/Revenue = crypto P/E (valuation vs. revenue the token actually captures).
+    ranked = sorted(
+        (r for r in df.to_dict("records") if pd.notna(r.get("mc_revenue"))),
+        key=lambda r: r["mc_revenue"],
+    )
+    zero_rev = [r["symbol"] for r in df.to_dict("records") if r.get("revenue_ann") == 0]
+    rev_line = ""
+    if ranked:
+        rev_line = " · **MC/Revenue** (P/E cripto, menor = más barato): " + " · ".join(
+            f"{r['symbol']} {r['mc_revenue']:,.0f}×" for r in ranked
+        )
+    if zero_rev:
+        rev_line += (
+            f" · **{', '.join(zero_rev)}: $0 de revenue al token** pese a su TVL → "
+            "sin *value accrual* (la mejor señal de tesis rota)."
+        )
     st.caption(
         "El *concepto rector* (sección 2): ¿el precio sigue a la actividad que el protocolo "
         "captura? **MC/TVL alto (rojo)** = valoración por delante de la actividad on-chain (cara); "
-        "**bajo (verde)** = barata respecto a su actividad. Esa brecha es la tesis de inversión. "
-        "Proxy de actividad = TVL (aún no se ingiere *revenue*; mejora futura)."
+        "**bajo (verde)** = barata. Aún más directo: **MC/Revenue** compara la valoración con el "
+        "*revenue* que llega al token (DefiLlama, anualizado desde 30 d)." + rev_line
     )
 
 

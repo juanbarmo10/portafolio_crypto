@@ -417,7 +417,12 @@ def value_accrual_table(conn: sqlite3.Connection, settings: Settings) -> pd.Data
     tracked TVL **and** a market cap are included (revenue is not yet ingested — a future
     enhancement; TVL is today's activity proxy).
 
-    Returns columns [symbol, thesis_category, tvl, mcap, mc_tvl, logo_url].
+    ``mc_revenue`` (market cap / annualized revenue) is the truer value-capture ratio — a
+    crypto P/E. A protocol with big TVL but ~0 revenue to the token (no fee switch, e.g.
+    ONDO) has no ``mc_revenue`` (None) — the clearest "no value accrual" signal.
+
+    Returns columns [symbol, thesis_category, tvl, mcap, mc_tvl, revenue_ann, mc_revenue,
+    logo_url].
     """
     rows: list[dict[str, Any]] = []
     for asset in settings.assets:
@@ -429,6 +434,9 @@ def value_accrual_table(conn: sqlite3.Connection, settings: Settings) -> pd.Data
         mcap = _val(latest_observation(conn, "coingecko", f"{asset['coingecko_id']}:market_cap"))
         if not tvl or mcap is None:
             continue
+        rev_30d = _val(latest_observation(conn, "defillama", f"{dl['slug']}:revenue_30d"))
+        revenue_ann = rev_30d * (365.0 / 30.0) if rev_30d is not None else None
+        mc_revenue = (mcap / revenue_ann) if (revenue_ann and revenue_ann > 0) else None
         meta = settings.meta_for(asset["symbol"])
         rows.append(
             {
@@ -437,6 +445,8 @@ def value_accrual_table(conn: sqlite3.Connection, settings: Settings) -> pd.Data
                 "tvl": tvl,
                 "mcap": mcap,
                 "mc_tvl": mc_tvl_ratio(mcap, tvl),
+                "revenue_ann": revenue_ann,
+                "mc_revenue": mc_revenue,
                 "logo_url": meta.get("logo_url"),
             }
         )

@@ -73,6 +73,22 @@ class DefiLlamaIngester(Ingester):
             if pt.get("tvl") is not None
         ]
 
+    def _fetch_revenue_30d(self, slug: str) -> float | None:
+        """30-day protocol **revenue** (USD to the protocol/token) or None if unavailable.
+
+        Revenue (not total fees) is the value-accrual signal: a protocol can have big fees
+        yet ~0 revenue to the token if there is no fee switch (e.g. ONDO). 404 -> None.
+        """
+        resp = requests.get(
+            f"{self._base_url}/summary/fees/{slug}",
+            params={"dataType": "dailyRevenue"},
+            timeout=self._timeout,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json().get("total30d")
+
     @staticmethod
     def _unix_to_iso(unix_ts: int | str) -> str:
         """Convert a unix seconds timestamp to an ISO8601 UTC date string."""
@@ -101,6 +117,33 @@ class DefiLlamaIngester(Ingester):
                     }
                 )
             log.info("DefiLlama: %s '%s' -> %d points.", kind, slug, len(history))
+
+        # Protocol revenue snapshot (value accrual to the token). Current date; only
+        # protocol slugs (chains have no /summary/fees entry). Isolated per-slug.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+        for kind, slug in self._targets:
+            if kind != "protocol":
+                continue
+            try:
+                revenue = retry(
+                    lambda s=slug: self._fetch_revenue_30d(s),
+                    exceptions=(requests.RequestException,),
+                )
+            except requests.RequestException:
+                log.warning("DefiLlama revenue: %s failed; skipping.", slug)
+                continue
+            if revenue is None:
+                continue
+            rows.append(
+                {
+                    "source": self.source,
+                    "series_id": f"{slug}:revenue_30d",
+                    "ts": today,
+                    "ts_release": None,
+                    "value": revenue,
+                }
+            )
+            log.info("DefiLlama revenue: %s 30d=%.0f", slug, revenue)
 
         df = pd.DataFrame(rows, columns=["source", "series_id", "ts", "ts_release", "value"])
         return self.validate(df)

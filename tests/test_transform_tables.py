@@ -410,6 +410,45 @@ def test_value_accrual_table_needs_tvl_and_mcap(conn, settings) -> None:
     assert "XRP" not in set(df["symbol"])  # XRP has no defillama slug -> never included
 
 
+def test_value_accrual_revenue_and_mc_revenue(conn, settings) -> None:
+    slug = next(a["defillama"]["slug"] for a in settings.assets if a["symbol"] == "AAVE")
+    cid = next(a["coingecko_id"] for a in settings.assets if a["symbol"] == "AAVE")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs(f"{slug}:tvl", now, 1_000_000_000.0, source="defillama"),
+                _obs(f"{cid}:market_cap", now, 1_200_000_000.0, source="coingecko"),
+                _obs(f"{slug}:revenue_30d", now, 10_000_000.0, source="defillama"),
+            ]
+        ),
+    )
+    aave = value_accrual_table(conn, settings).query("symbol == 'AAVE'").iloc[0]
+    assert aave["revenue_ann"] == pytest.approx(10_000_000 * 365 / 30)  # annualized from 30d
+    assert aave["mc_revenue"] == pytest.approx(1_200_000_000 / (10_000_000 * 365 / 30))
+
+
+def test_value_accrual_zero_revenue_no_mc_revenue(conn, settings) -> None:
+    # $0 revenue (no fee switch, e.g. ONDO) -> mc_revenue is None (no value accrual).
+    slug = next(a["defillama"]["slug"] for a in settings.assets if a["symbol"] == "ONDO")
+    cid = next(a["coingecko_id"] for a in settings.assets if a["symbol"] == "ONDO")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs(f"{slug}:tvl", now, 3_000_000_000.0, source="defillama"),
+                _obs(f"{cid}:market_cap", now, 1_800_000_000.0, source="coingecko"),
+                _obs(f"{slug}:revenue_30d", now, 0.0, source="defillama"),
+            ]
+        ),
+    )
+    ondo = value_accrual_table(conn, settings).query("symbol == 'ONDO'").iloc[0]
+    assert ondo["revenue_ann"] == pytest.approx(0.0)
+    assert ondo["mc_revenue"] is None
+
+
 def test_dca_vs_baseline_edge(conn, settings) -> None:
     cid = next(a["coingecko_id"] for a in settings.assets if a["symbol"] == "BTC")
     # Buys: 1@100 and 1@300 over [01-01, 01-10] -> avg entry 200 (invested 400 / 2 tokens).

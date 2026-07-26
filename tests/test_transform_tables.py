@@ -371,6 +371,23 @@ def test_thesis_invalidation_flags_tvl_drop(conn, settings) -> None:
     assert board.iloc[0]["status"] in {"red", "amber"}  # sorted worst-first
 
 
+def test_thesis_invalidation_flags_etf_outflows(conn, settings) -> None:
+    # 3 consecutive BTC ETF outflow days -> red ("sustained ETF outflows" = §5 invalidation).
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("etf:btc:total", "2026-07-20T00:00:00+00:00", -50.0, source="farside"),
+                _obs("etf:btc:total", "2026-07-21T00:00:00+00:00", -30.0, source="farside"),
+                _obs("etf:btc:total", "2026-07-22T00:00:00+00:00", -20.0, source="farside"),
+            ]
+        ),
+    )
+    btc = thesis_invalidation_table(conn, settings).query("symbol == 'BTC'").iloc[0]
+    assert btc["status"] == "red"
+    assert "ETF" in btc["reason"]
+
+
 def test_value_accrual_table_needs_tvl_and_mcap(conn, settings) -> None:
     # AAVE has TVL 500M and mcap 2B -> MC/TVL = 4.0; included. No mcap -> excluded.
     slug = next(a["defillama"]["slug"] for a in settings.assets if a["symbol"] == "AAVE")

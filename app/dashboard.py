@@ -698,8 +698,9 @@ def _thesis_invalidation_board(conn, settings) -> None:
         column_config={
             "Logo": st.column_config.ImageColumn("", width="small"),
             "Estado": st.column_config.TextColumn(
-                help="Semáforo a partir de señales cuantitativas: caída de TVL 7d, dilución "
-                "alta (circ/máx), y unlock próximo. Toma la peor señal aplicable."
+                help="Semáforo a partir de señales cuantitativas: salidas ETF sostenidas "
+                "(BTC/ETH), caída de TVL 7d, dilución alta (circ/máx), y unlock próximo. "
+                "Toma la peor señal aplicable."
             ),
             "Métrica de invalidación": st.column_config.TextColumn(
                 width="large", help="Qué rompería la tesis del activo (nivel 3)."
@@ -709,8 +710,8 @@ def _thesis_invalidation_board(conn, settings) -> None:
     st.caption(
         "Semáforo de la tesis por activo (nivel 3): 🔴 una señal de invalidación cruzó umbral · "
         "🟠 vigilar · 🟢 sin alerta · ⚪ métrica **cualitativa**, no medible con estos datos "
-        "(p. ej. demanda de token de HBAR, riesgo regulatorio de BNB). Basado en TVL, dilución y "
-        "unlocks; no captura invalidaciones cualitativas."
+        "(p. ej. demanda de token de HBAR, riesgo regulatorio de BNB). Basado en salidas ETF "
+        "(BTC/ETH), TVL, dilución y unlocks; no captura invalidaciones cualitativas."
     )
 
 

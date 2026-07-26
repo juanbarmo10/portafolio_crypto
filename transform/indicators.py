@@ -293,6 +293,8 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
     """Per-asset thesis-invalidation status from the quantitative signals we track (level 3).
 
     Maps each asset's measurable signals to a green/amber/red light:
+      * ETF outflows -> (BTC/ETH) red at ``etf_flow_streak_days`` consecutive out-days,
+        amber at >= 2 — their §5 invalidation is "sustained ETF outflows".
       * TVL 7d drop  -> red at ``tvl_drop_pct_7d_alert`` (default 20%), amber at half.
       * Dilution     -> amber when circulating/max < ``dilution_ratio_alert`` (structural).
       * Next unlock  -> red within 7 days, amber within 30 (selling pressure event).
@@ -307,7 +309,17 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
     tvl_red = float(ind.get("tvl_drop_pct_7d_alert", 20.0))
     tvl_amber = tvl_red / 2.0
     dil_alert = float(ind.get("dilution_ratio_alert", 0.6))
+    etf_red = int(ind.get("etf_flow_streak_days", 3))
     today = datetime.now(timezone.utc).date()
+
+    # ETF-flow streaks (BTC/ETH): their §5 invalidation is "sustained ETF outflows".
+    # Local import avoids a circular dependency with transform.rally_quality.
+    from transform.rally_quality import etf_flow_summary
+
+    etf_streak = {
+        r["asset"]: (r["streak_sign"], r["streak_days"])
+        for r in etf_flow_summary(conn, settings).to_dict("records")
+    }
 
     rows: list[dict[str, Any]] = []
     for asset in settings.assets:
@@ -316,6 +328,19 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
         severity = 0
         measurable = False
         reasons: list[str] = []
+
+        etf = etf_streak.get(symbol)
+        if etf is not None:
+            sign, days = etf
+            measurable = True
+            if sign < 0 and days >= etf_red:
+                severity = max(severity, 3)
+                reasons.append(f"salidas ETF {days}d")
+            elif sign < 0 and days >= 2:
+                severity = max(severity, 2)
+                reasons.append(f"salidas ETF {days}d")
+            else:
+                severity = max(severity, 1)
 
         dl = asset.get("defillama")
         if dl:

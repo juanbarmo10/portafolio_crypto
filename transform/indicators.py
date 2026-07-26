@@ -612,6 +612,85 @@ def holdings_by_group(
     return agg
 
 
+def dca_vs_baseline_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Compare real buy trades against a blind-DCA baseline (§2 behavioral goal).
+
+    For each accumulated asset: your **average entry price** vs. the **mean daily price
+    over the accumulation window** (what buying on a fixed cadence would have averaged).
+    ``edge_pp`` = your return minus the baseline's; positive = your timing beat blindly
+    averaging in. The baseline needs price history covering the window start, so it shows
+    None until backfilled (``run_ingest.py --backfill``) — honest, not a fake number.
+
+    Returns per-asset columns [symbol, n_buys, tokens, invested_usd, avg_entry,
+    current_price, value_now, actual_ret_pct, baseline_avg, baseline_ret_pct, edge_pp],
+    with attrs total_invested_usd / total_value_now_usd across priced positions.
+    """
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    trades = conn.execute(
+        "SELECT symbol, side, ts, amount, cost FROM trades ORDER BY ts"
+    ).fetchall()
+
+    agg: dict[str, dict[str, Any]] = {}
+    for symbol, side, ts, amount, cost in trades:
+        base = symbol.split("/")[0]
+        if base in STABLECOINS:
+            continue
+        a = agg.setdefault(base, {"tokens": 0.0, "invested": 0.0, "n_buys": 0, "first_ts": ts})
+        sign = 1.0 if side == "buy" else -1.0
+        a["tokens"] += sign * (amount or 0.0)
+        a["invested"] += sign * (cost or 0.0)
+        if side == "buy":
+            a["n_buys"] += 1
+        a["first_ts"] = min(a["first_ts"], ts)
+
+    rows: list[dict[str, Any]] = []
+    for base, a in agg.items():
+        cid = id_by_symbol.get(base)
+        if cid is None or a["tokens"] <= 0 or a["invested"] <= 0:
+            continue
+        avg_entry = a["invested"] / a["tokens"]
+        current = _val(latest_observation(conn, "coingecko", f"{cid}:price"))
+        value_now = a["tokens"] * current if current else None
+        actual_ret = (current / avg_entry - 1.0) * 100.0 if current else None
+
+        baseline_avg = baseline_ret = edge = None
+        hist = series_history(conn, "coingecko", f"{cid}:price").dropna()
+        if not hist.empty:
+            first = pd.Timestamp(a["first_ts"])
+            if hist.index.min() <= first:  # history actually covers the accumulation window
+                window = hist[hist.index >= first]
+                if len(window) >= 2:
+                    baseline_avg = float(window.mean())
+                    if current and baseline_avg:
+                        baseline_ret = (current / baseline_avg - 1.0) * 100.0
+                        if actual_ret is not None:
+                            edge = actual_ret - baseline_ret
+
+        rows.append(
+            {
+                "symbol": base,
+                "n_buys": a["n_buys"],
+                "tokens": a["tokens"],
+                "invested_usd": a["invested"],
+                "avg_entry": avg_entry,
+                "current_price": current,
+                "value_now": value_now,
+                "actual_ret_pct": actual_ret,
+                "baseline_avg": baseline_avg,
+                "baseline_ret_pct": baseline_ret,
+                "edge_pp": edge,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("invested_usd", ascending=False).reset_index(drop=True)
+        df.attrs["total_invested_usd"] = float(df["invested_usd"].sum())
+        priced = df[df["value_now"].notna()]
+        df.attrs["total_value_now_usd"] = float(priced["value_now"].sum()) if not priced.empty else 0.0
+    return df
+
+
 def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Aggregate real executed trades (level 4): invested, proceeds, fees, count.
 

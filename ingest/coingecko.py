@@ -17,6 +17,7 @@ fetch() -> DataFrame[source, series_id, ts, ts_release, value]
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,6 +40,32 @@ _METRIC_KEYS: dict[str, str] = {
     "max_supply": "max_supply",
     "ath": "ath",
 }
+
+
+def parse_market_chart(payload: dict, coin_id: str) -> list[dict]:
+    """Turn a /coins/{id}/market_chart response into daily price observations.
+
+    ``prices`` is ``[[ms_timestamp, price], ...]``; for a >90-day window CoinGecko
+    returns one point per day (plus a trailing intraday "now"). Dedup by UTC date and
+    stamp ts at day midnight so backfilled points merge with the daily snapshot
+    (idempotent upsert). Pure/testable.
+    """
+    by_day: dict[str, float] = {}
+    for point in payload.get("prices", []):
+        if not point or point[1] is None:
+            continue
+        day = datetime.fromtimestamp(point[0] / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        by_day[day] = float(point[1])  # last price seen for the day wins
+    return [
+        {
+            "source": "coingecko",
+            "series_id": f"{coin_id}:price",
+            "ts": f"{day}T00:00:00+00:00",
+            "ts_release": None,
+            "value": price,
+        }
+        for day, price in sorted(by_day.items())
+    ]
 
 
 class CoinGeckoIngester(Ingester):
@@ -135,3 +162,43 @@ class CoinGeckoIngester(Ingester):
         df = pd.DataFrame(rows, columns=["source", "series_id", "ts", "ts_release", "value"])
         log.info("CoinGecko: %d observations across %d assets (+ global).", len(df), len(data))
         return self.validate(df)
+
+    def fetch_history(self, days: int = 365) -> pd.DataFrame:
+        """One-time backfill of daily prices per asset via /coins/{id}/market_chart.
+
+        The daily snapshot only accrues going forward; this catches up history so
+        change/return/baseline calcs (24h/7d/30d, DCA-vs-baseline) have real data.
+        One request per asset, paced to stay under the free ~30 req/min limit.
+        Idempotent (same day -> ON CONFLICT overwrite). Invoked via ``run_ingest.py
+        --backfill``, not the daily run.
+        """
+        sleep_s = float(self._settings.source("coingecko").get("history_sleep_s", 6))
+        rows: list[dict[str, Any]] = []
+        for coin_id in self._ids:
+            def _call(cid: str = coin_id) -> dict:
+                resp = requests.get(
+                    f"{self._base_url}/coins/{cid}/market_chart",
+                    params={"vs_currency": self._vs_currency, "days": days},
+                    timeout=self._timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+            try:
+                payload = retry(
+                    _call, attempts=4, base_delay_s=5, max_delay_s=30,
+                    exceptions=(requests.RequestException,),
+                )
+            except requests.RequestException as exc:
+                # Free-tier rate limit: skip this asset (idempotent re-run fills it) rather
+                # than aborting the whole backfill.
+                log.warning("CoinGecko history: %s failed (%s); skipping.", coin_id, exc)
+                time.sleep(sleep_s)
+                continue
+            parsed = parse_market_chart(payload, coin_id)
+            log.info("CoinGecko history: %s -> %d daily points.", coin_id, len(parsed))
+            rows.extend(parsed)
+            time.sleep(sleep_s)  # pace requests under the free rate limit
+        return self.validate(
+            pd.DataFrame(rows, columns=["source", "series_id", "ts", "ts_release", "value"])
+        )

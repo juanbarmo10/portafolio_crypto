@@ -86,6 +86,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Public market data only: skip the private Binance account sync "
         "(use when writing to a shared/cloud DB feeding a public dashboard).",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="One-time historical backfill (CoinGecko daily prices) instead of the "
+        "daily snapshot; gives change/return/baseline calcs real history.",
+    )
     return parser.parse_args(argv)
 
 
@@ -116,6 +122,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.dry_run:
             log.info("Dry run: schema ensured, no ingesters executed. Done.")
+            return 0
+
+        if args.backfill:
+            filled = 0
+            for ingester in build_ingesters(settings, public=args.public):
+                if hasattr(ingester, "fetch_history"):
+                    filled += upsert_observations(conn, ingester.fetch_history())
+            log.info("Backfill complete: %d historical observations upserted.", filled)
             return 0
 
         total = 0

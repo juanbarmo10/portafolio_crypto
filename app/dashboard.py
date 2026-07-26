@@ -41,6 +41,7 @@ from db.queries import series_history, upcoming_events
 from validation.backtest import funding_zscore_backtest
 from transform.indicators import (
     dca_status,
+    dca_vs_baseline_table,
     execution_summary,
     holdings_by_group,
     holdings_table,
@@ -927,6 +928,68 @@ def _section_execution(conn, settings) -> None:
             f"**Próximo tramo:** {nxt['asset']} ({nxt['tier']}) · "
             f"{_fmt_usd(nxt['amount_usd'])} · objetivo {nxt['target_date']}"
         )
+
+    _dca_baseline_view(conn, settings)
+
+
+def _dca_baseline_view(conn, settings) -> None:
+    """DCA-vs-baseline tracker: did real entry timing beat blindly averaging in? (§2)."""
+    df = dca_vs_baseline_table(conn, settings)
+    st.subheader("DCA real vs. baseline")
+    if df.empty:
+        st.caption(
+            "Sin operaciones de compra registradas para comparar. Se puebla al sincronizar "
+            "la cuenta (`run_ingest.py`)."
+        )
+        return
+    inv = df.attrs.get("total_invested_usd", 0.0)
+    val = df.attrs.get("total_value_now_usd", 0.0)
+    c1, c2 = st.columns(2)
+    c1.metric("Invertido (compras netas)", _fmt_usd(inv))
+    c2.metric(
+        "Valor actual", _fmt_usd(val),
+        delta=f"{(val / inv - 1) * 100:+.1f}%" if inv else None,
+    )
+    show = pd.DataFrame(
+        {
+            "Logo": [settings.meta_for(s).get("logo_url") or "" for s in df["symbol"]],
+            "Activo": df["symbol"],
+            "Compras": df["n_buys"],
+            "Entrada media": df["avg_entry"].map(_fmt_usd),
+            "Precio actual": df["current_price"].map(_fmt_usd),
+            "Retorno real": df["actual_ret_pct"].map(_fmt_change),
+            "Baseline (media)": df["baseline_avg"].map(_fmt_usd),
+            "Retorno baseline": df["baseline_ret_pct"].map(_fmt_change),
+            "Edge": df["edge_pp"].map(_fmt_pp),
+        }
+    )
+    styler = show.style.map(
+        _color_by_sign, subset=["Retorno real", "Retorno baseline", "Edge"]
+    )
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Entrada media": st.column_config.TextColumn(
+                help="Precio medio ponderado de tus compras reales."
+            ),
+            "Baseline (media)": st.column_config.TextColumn(
+                help="Precio medio diario en la ventana de acumulación = comprar a cadencia fija "
+                "(DCA ciego). — hasta que haya histórico que cubra la ventana (usa --backfill)."
+            ),
+            "Edge": st.column_config.TextColumn(
+                help="Retorno real − retorno baseline. Positivo = tu *timing* batió el promediar "
+                "a ciegas; negativo = lo empeoró."
+            ),
+        },
+    )
+    st.caption(
+        "¿El *timing* de tus entradas batió a promediar a ciegas? (sección 2, objetivo conductual). "
+        "**Edge > 0** = compraste por debajo del precio medio de la ventana. El baseline necesita "
+        "histórico de precios que cubra la ventana; se rellena con `python run_ingest.py --backfill`."
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner="Validando señales (backtest)…")

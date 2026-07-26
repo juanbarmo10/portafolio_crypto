@@ -41,7 +41,7 @@ pytest && ruff check .
 
 ## Estado
 
-**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridad 1 lista.**
+**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridades 1 y 2 listas.**
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -71,15 +71,18 @@ Incluye hasta ahora:
 - **Análisis nuevo (Fase 5, Prioridad 2):** **strip de "Próximos 7 días"** (releases macro CPI/PCE/NFP
   vía FRED `release/dates` + FOMC/unlocks de config; cierra la alerta `macro_release_soon`); **tablero
   de invalidación de tesis** (semáforo verde/ámbar/rojo por activo, honesto sobre métricas cualitativas
-  no medibles); y **vista de *value accrual*** (scatter TVL vs. mcap + ranking MC/TVL — el *concepto
-  rector*: ¿el precio sigue a la actividad on-chain?).
+  no medibles); **vista de *value accrual*** (scatter TVL vs. mcap + ranking MC/TVL — el *concepto
+  rector*: ¿el precio sigue a la actividad on-chain?); y **tracker DCA vs. baseline** (entrada media
+  real vs. DCA ciego, con *edge* del *timing*). Incluye **backfill histórico de precios**
+  (`run_ingest.py --backfill`, CoinGecko `/market_chart`) que da historia real a variaciones,
+  drill-down y baseline.
 - **Alertas** (`run_alerts.py`): motor declarativo (`alerts.rules` en config) — racha de salidas
   ETF, funding z extremo, caída de TVL, unlock próximo, recordatorio de aporte mensual, **release
   macro/FOMC inminente** — con entrega por Telegram (dry-run si no hay bot) y dedup por `alerts_log`.
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 129) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 132) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
 
@@ -121,6 +124,11 @@ python run_ingest.py --dry-run
 # Ingesta real. CoinGecko y DefiLlama no requieren key; el macro de FRED
 # se puebla solo si FRED_API_KEY está configurada (si no, se salta con warning).
 python run_ingest.py
+
+# Backfill histórico de precios (una vez): 365 d diarios por activo (CoinGecko
+# /market_chart). Da historia real a variaciones 24h/7d/30d, drill-down y al baseline
+# del tracker DCA. Resiliente al rate limit (reintenta/salta activo); idempotente.
+python run_ingest.py --backfill
 
 # Dashboard (requiere el extra ".[app]"). Lanzador de un comando (usa el venv):
 ./run_dashboard.sh                    # http://localhost:8501
@@ -273,7 +281,7 @@ interna del proyecto.
 ## Tests
 
 ```bash
-pytest            # suite completa (129)
+pytest            # suite completa (132)
 ruff check .      # linting
 ```
 

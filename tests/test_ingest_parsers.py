@@ -108,3 +108,30 @@ def test_defillama_parses_protocol_and_chain(monkeypatch) -> None:
     assert len(sui) == 2
     assert 520.0 in set(sui["value"])
     load_settings.cache_clear()
+
+
+def test_parse_market_chart_dedups_by_day():
+    """market_chart -> one daily price observation per UTC day (last price wins)."""
+    from datetime import datetime, timezone
+
+    from ingest.coingecko import parse_market_chart
+
+    def ms(y, mo, d, h=0):
+        return int(datetime(y, mo, d, h, tzinfo=timezone.utc).timestamp() * 1000)
+
+    payload = {
+        "prices": [
+            [ms(2026, 1, 29, 0), 100.0],
+            [ms(2026, 1, 29, 12), 110.0],  # same UTC day -> last wins (110)
+            [ms(2026, 1, 30, 0), 120.0],
+            [ms(2026, 1, 31, 0), None],  # null price -> skipped
+        ]
+    }
+    out = parse_market_chart(payload, "bitcoin")
+    assert len(out) == 2
+    d29 = next(o for o in out if o["ts"].startswith("2026-01-29"))
+    assert d29["value"] == 110.0
+    assert d29["series_id"] == "bitcoin:price"
+    assert d29["ts"] == "2026-01-29T00:00:00+00:00"
+    assert d29["source"] == "coingecko"
+    assert set(OBSERVATION_COLUMNS) <= set(d29)

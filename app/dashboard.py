@@ -1013,23 +1013,30 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
             "así que muchas compras pequeñas erosionan más que pocas grandes."
         )
 
-    cap = capital_deployed_summary(conn)
+    cap = capital_deployed_summary(conn, settings)
     if cap.get("has_flows"):
         total_val = holdings.attrs.get("total_value_usd", 0.0)  # incl. efectivo
         net = cap["net_deployed_usd"]
         roi = (total_val / net - 1) * 100 if net else None
         k1, k2, k3 = st.columns(3)
-        k1.metric("Capital neto aportado", _fmt_usd(net), help="Depósitos − retiros fiat (USD).")
+        k1.metric(
+            "Capital neto aportado", _fmt_usd(net),
+            help="Depósitos − retiros (fiat orders + PSE/pagos + P2P), o el valor manual "
+            "`net_deployed_usd` si está configurado.",
+        )
         k2.metric("Valor total (incl. efectivo)", _fmt_usd(total_val))
         k3.metric(
             "Retorno sobre aportes", "—" if roi is None else f"{roi:+.1f}%",
             help="Valor total de la cuenta ÷ capital neto aportado − 1. La rentabilidad real "
             "sobre lo que has ingresado (secciones 1, 2).",
         )
-        if cap["unconverted"]:
+        if cap.get("is_manual"):
+            st.caption("Capital neto **manual** (`net_deployed_usd` en config).")
+        else:
             st.caption(
-                f"{cap['unconverted']} movimiento(s) fiat sin tasa FX → excluidos del cómputo. "
-                "Añade `fx_to_usd` (p. ej. COP) en `config/settings.local.yaml` para incluirlos."
+                "Capital auto (fiat orders + PSE + P2P). Si falta algún canal, fija el total real "
+                "en `net_deployed_usd` (config/settings.local.yaml) — es autoritativo."
+                + (f" · {cap['unconverted']} movimiento(s) sin tasa FX excluidos." if cap["unconverted"] else "")
             )
 
     earn = earn_rewards_summary(conn, settings)

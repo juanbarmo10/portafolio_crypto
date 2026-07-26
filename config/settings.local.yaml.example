@@ -38,3 +38,11 @@
 #   binance_account:
 #     fx_to_usd:
 #       COP: 0.00024   # ~1 USD ≈ 4100 COP; ajusta al valor actual
+
+# Capital neto aportado (USD) — AUTORITATIVO, sobrescribe el cálculo automático de
+# capital_flows. Úsalo si tus depósitos vinieron por canales que la API no expone bien
+# (algunos PSE/P2P) y conoces tu total real invertido. Depósitos − retiros, en USD.
+#
+# sources:
+#   binance_account:
+#     net_deployed_usd: 1500

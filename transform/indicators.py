@@ -972,15 +972,18 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
     }
 
 
-def capital_deployed_summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Net fiat capital deployed (deposits − withdrawals, USD) from ``capital_flows``.
+def capital_deployed_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Net fiat capital deployed (deposits − withdrawals, USD): the true denominator for
+    return on real contributions (sections 1, 2).
 
-    This is the true denominator for return on real contributions (sections 1, 2): what you
-    actually put into the account, independent of how it was later traded. Flows in a
-    currency without an FX rate are counted (``unconverted``) but excluded from the sums.
+    A manual ``binance_account.net_deployed_usd`` (settings.local.yaml) is **authoritative**
+    and wins — use it when the auto capture is incomplete (e.g. deposits via channels not
+    covered by an API endpoint). Otherwise it sums ``capital_flows`` (fiat orders, fiat
+    payments/PSE, P2P). Flows without an FX rate are counted (``unconverted``) but excluded.
     """
+    manual = settings.source("binance_account").get("net_deployed_usd")
     rows = conn.execute("SELECT kind, usd_value FROM capital_flows").fetchall()
-    if not rows:
+    if manual is None and not rows:
         return {"has_flows": False}
     deposits = sum(v for k, v in rows if k == "deposit" and v is not None)
     withdrawals = sum(v for k, v in rows if k == "withdraw" and v is not None)
@@ -989,8 +992,9 @@ def capital_deployed_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "has_flows": True,
         "deposits_usd": deposits,
         "withdrawals_usd": withdrawals,
-        "net_deployed_usd": deposits - withdrawals,
+        "net_deployed_usd": float(manual) if manual is not None else deposits - withdrawals,
         "unconverted": unconverted,
+        "is_manual": manual is not None,
     }
 
 

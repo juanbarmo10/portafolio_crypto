@@ -624,11 +624,18 @@ def test_capital_deployed_summary_net_and_idempotent(conn, settings) -> None:
     upsert_capital_flows(conn, flows)  # re-run: no duplicates (keyed by flow_id)
     assert conn.execute("SELECT COUNT(*) FROM capital_flows").fetchone()[0] == 4
 
-    s = capital_deployed_summary(conn)
+    s = capital_deployed_summary(conn, settings)
     assert s["deposits_usd"] == pytest.approx(1100.0)  # 1000 + 100 (EUR excluded)
     assert s["withdrawals_usd"] == pytest.approx(300.0)
     assert s["net_deployed_usd"] == pytest.approx(800.0)
     assert s["unconverted"] == 1
+    assert s["is_manual"] is False
+
+    # Manual override wins (for capital via channels the API doesn't expose).
+    settings.raw["sources"]["binance_account"]["net_deployed_usd"] = 5000.0
+    s2 = capital_deployed_summary(conn, settings)
+    assert s2["net_deployed_usd"] == pytest.approx(5000.0)
+    assert s2["is_manual"] is True
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

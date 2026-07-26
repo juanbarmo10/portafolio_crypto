@@ -218,6 +218,73 @@ def parse_fiat_flows(
     return rows
 
 
+def parse_fiat_payments(
+    records: list[dict], kind: str, fx_to_usd: dict[str, float]
+) -> list[dict[str, Any]]:
+    """Binance fiat **payments** (buy/sell crypto with fiat, e.g. PSE/card) -> capital_flows.
+
+    A buy spends fiat (``sourceAmount`` in ``fiatCurrency``) -> deposit of capital; a sell
+    receives fiat (``obtainAmount``) -> withdraw. Only completed orders. Keyed by orderNo.
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if str(rec.get("status", "")).lower() not in ("completed", "successful", "success"):
+            continue
+        order_no = rec.get("orderNo")
+        currency = rec.get("fiatCurrency")
+        fiat_amt = _as_float(rec.get("sourceAmount") if kind == "deposit" else rec.get("obtainAmount"))
+        ts_ms = rec.get("createTime")
+        if order_no is None or not currency or fiat_amt is None or not ts_ms:
+            continue
+        rate = fx_to_usd.get(currency.upper())
+        rows.append(
+            {
+                "flow_id": f"binance:payment:{order_no}",
+                "kind": kind,
+                "asset": currency.upper(),
+                "amount": fiat_amt,
+                "usd_value": (fiat_amt * rate) if rate is not None else None,
+                "ts": datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00"
+                ),
+            }
+        )
+    return rows
+
+
+def parse_c2c_orders(records: list[dict], fx_to_usd: dict[str, float]) -> list[dict[str, Any]]:
+    """Binance **P2P (C2C)** orders -> capital_flows. Pure, testable.
+
+    A P2P BUY pays fiat (``totalPrice`` in ``fiat``) to an external seller -> deposit of
+    capital; a SELL receives fiat -> withdraw. Only completed orders. Keyed by orderNumber.
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if str(rec.get("orderStatus", "")).upper() != "COMPLETED":
+            continue
+        order_no = rec.get("orderNumber")
+        currency = rec.get("fiat")
+        fiat_amt = _as_float(rec.get("totalPrice"))
+        trade_type = str(rec.get("tradeType", "")).upper()
+        ts_ms = rec.get("createTime")
+        if order_no is None or not currency or fiat_amt is None or trade_type not in ("BUY", "SELL"):
+            continue
+        rate = fx_to_usd.get(currency.upper())
+        rows.append(
+            {
+                "flow_id": f"binance:p2p:{order_no}",
+                "kind": "deposit" if trade_type == "BUY" else "withdraw",
+                "asset": currency.upper(),
+                "amount": fiat_amt,
+                "usd_value": (fiat_amt * rate) if rate is not None else None,
+                "ts": datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00"
+                ),
+            }
+        )
+    return rows
+
+
 class BinanceAccountIngester(Ingester):
     """Read-only Binance holdings (via fetch()) and trade history (via fetch_trades())."""
 
@@ -455,23 +522,58 @@ class BinanceAccountIngester(Ingester):
         fx.setdefault("USD", 1.0)
         now = self._exchange.milliseconds()
         since = now - self._account_days * 24 * 3600 * 1000
-        window = 90 * 24 * 3600 * 1000
+        day = 24 * 3600 * 1000
         rows: list[dict[str, Any]] = []
-        for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):
+
+        def _windows(width_days: int):
             start = since
             while start < now:
-                end = min(start + window, now)
+                end = min(start + width_days * day, now)
+                yield start, end
+                start = end
+
+        # Fiat orders: direct fiat balance deposits/withdrawals (90-day windows).
+        for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):
+            for s, e in _windows(90):
                 try:
                     resp = retry(
-                        lambda s=start, e=end, t=tx_type: self._exchange.sapiGetFiatOrders(
+                        lambda s=s, e=e, t=tx_type: self._exchange.sapiGetFiatOrders(
                             {"transactionType": t, "beginTime": s, "endTime": e, "rows": 500}
                         ),
                         exceptions=(ccxt.NetworkError,),
                     )
                     rows.extend(parse_fiat_flows(resp.get("data", []) or [], kind, fx))
                 except Exception:  # noqa: BLE001 — isolate per-window failures
-                    log.exception("Binance fiat %s: window %s-%s failed", kind, start, end)
-                start = end
+                    log.exception("Binance fiat orders %s: window failed", kind)
+
+        # Fiat payments: buy/sell crypto with fiat (e.g. PSE, card) — capital in/out.
+        for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):
+            for s, e in _windows(90):
+                try:
+                    resp = retry(
+                        lambda s=s, e=e, t=tx_type: self._exchange.sapiGetFiatPayments(
+                            {"transactionType": t, "beginTime": s, "endTime": e, "rows": 500}
+                        ),
+                        exceptions=(ccxt.NetworkError,),
+                    )
+                    rows.extend(parse_fiat_payments(resp.get("data", []) or [], kind, fx))
+                except Exception:  # noqa: BLE001
+                    log.exception("Binance fiat payments %s: window failed", kind)
+
+        # P2P (C2C): buy/sell crypto peer-to-peer with fiat — capital in/out (30-day windows).
+        for trade_type in ("BUY", "SELL"):
+            for s, e in _windows(30):
+                try:
+                    resp = retry(
+                        lambda s=s, e=e, t=trade_type: self._exchange.sapiGetC2cOrderMatchListUserOrderHistory(
+                            {"tradeType": t, "startTimestamp": s, "endTimestamp": e, "rows": 100}
+                        ),
+                        exceptions=(ccxt.NetworkError,),
+                    )
+                    rows.extend(parse_c2c_orders(resp.get("data", []) or [], fx))
+                except Exception:  # noqa: BLE001
+                    log.exception("Binance P2P %s: window failed", trade_type)
+
         df = pd.DataFrame(rows, columns=CAPITAL_FLOW_COLUMNS)
-        log.info("Binance capital flows: %d rows.", len(df))
+        log.info("Binance capital flows: %d rows (fiat orders + payments + P2P).", len(df))
         return df

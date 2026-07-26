@@ -11,10 +11,12 @@ import pytest
 from ingest.binance_account import (
     CAPITAL_FLOW_COLUMNS,
     TRADE_COLUMNS,
+    parse_c2c_orders,
     parse_convert,
     parse_earn,
     parse_earn_rewards,
     parse_fiat_flows,
+    parse_fiat_payments,
     parse_trades,
 )
 
@@ -105,6 +107,35 @@ def test_parse_fiat_flows_usd_and_unconverted() -> None:
     assert rows[1]["usd_value"] == pytest.approx(400000 * 0.00025)  # 100
     assert rows[2]["usd_value"] is None  # EUR unconverted
     assert all(r["kind"] == "deposit" for r in rows)
+
+
+def test_parse_fiat_payments_pse_buy() -> None:
+    # Buy crypto with COP (e.g. PSE): sourceAmount COP = capital in.
+    records = [
+        {"orderNo": "p1", "fiatCurrency": "COP", "sourceAmount": "400000", "obtainAmount": "100",
+         "cryptoCurrency": "USDT", "status": "Completed", "createTime": 1_700_000_000_000},
+    ]
+    rows = parse_fiat_payments(records, "deposit", {"COP": 0.00025})
+    assert rows[0]["flow_id"] == "binance:payment:p1"
+    assert rows[0]["asset"] == "COP" and rows[0]["amount"] == 400000.0
+    assert rows[0]["usd_value"] == pytest.approx(100.0)  # 400000 * 0.00025
+    assert set(CAPITAL_FLOW_COLUMNS) <= set(rows[0])
+
+
+def test_parse_c2c_orders_buy_and_sell() -> None:
+    records = [
+        {"orderNumber": "c1", "tradeType": "BUY", "fiat": "COP", "totalPrice": "200000",
+         "asset": "USDT", "orderStatus": "COMPLETED", "createTime": 1_700_000_000_000},
+        {"orderNumber": "c2", "tradeType": "SELL", "fiat": "COP", "totalPrice": "80000",
+         "asset": "USDT", "orderStatus": "COMPLETED", "createTime": 1_700_100_000_000},
+        {"orderNumber": "c3", "tradeType": "BUY", "fiat": "COP", "totalPrice": "1",
+         "asset": "USDT", "orderStatus": "CANCELLED", "createTime": 1_700_200_000_000},  # skip
+    ]
+    rows = parse_c2c_orders(records, {"COP": 0.00025})
+    assert [(r["flow_id"], r["kind"]) for r in rows] == [
+        ("binance:p2p:c1", "deposit"), ("binance:p2p:c2", "withdraw")
+    ]
+    assert rows[0]["usd_value"] == pytest.approx(50.0)  # 200000 * 0.00025
 
 
 def test_parse_trades_skips_without_id_or_timestamp() -> None:

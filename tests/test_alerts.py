@@ -117,6 +117,33 @@ def test_dispatch_dedup(conn, settings) -> None:
     assert len(sender.sent) == first_count
 
 
+class _FailSender:
+    def send(self, message: str) -> bool:
+        return False  # e.g. Telegram not configured / send failed
+
+
+def test_dispatch_retries_when_not_delivered(conn, settings) -> None:
+    # An alert that fired but was NOT delivered (dry-run / no bot) must retry later.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("aave:tvl", "2026-07-16T00:00:00+00:00", 100.0, "defillama"),
+                _obs("aave:tvl", "2026-07-23T00:00:00+00:00", 75.0, "defillama"),
+            ]
+        ),
+    )
+    fired1, sent1 = dispatch_alerts(conn, settings, _FailSender())
+    assert fired1 >= 1 and sent1 == 0  # fired but nothing delivered -> not counted
+
+    ok = _FakeSender()
+    _, sent2 = dispatch_alerts(conn, settings, ok)  # retried now that delivery works
+    assert sent2 >= 1 and len(ok.sent) >= 1
+
+    _, sent3 = dispatch_alerts(conn, settings, ok)  # now deduped (delivered)
+    assert sent3 == 0
+
+
 def test_telegram_dry_run(settings) -> None:
     settings.secrets.pop("TELEGRAM_TOKEN", None)
     settings.secrets.pop("TELEGRAM_CHAT_ID", None)

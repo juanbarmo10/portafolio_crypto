@@ -216,7 +216,15 @@ def evaluate_rules(conn: sqlite3.Connection, settings: Settings) -> list[Alert]:
 
 
 def _already_sent(conn: sqlite3.Connection, dedup_key: str) -> bool:
-    return conn.execute("SELECT 1 FROM alerts_log WHERE alert_id = ?", (dedup_key,)).fetchone() is not None
+    """True only if this alert was already **delivered**.
+
+    A prior dry-run / failed send is logged with ``delivered=False`` and must be retried
+    (e.g. after Telegram is configured), so it does not count as sent.
+    """
+    row = conn.execute(
+        "SELECT payload FROM alerts_log WHERE alert_id = ?", (dedup_key,)
+    ).fetchone()
+    return bool(row) and "delivered=True" in (row[0] or "")
 
 
 def dispatch_alerts(conn: sqlite3.Connection, settings: Settings, sender: Any) -> tuple[int, int]:
@@ -236,12 +244,14 @@ def dispatch_alerts(conn: sqlite3.Connection, settings: Settings, sender: Any) -
             continue
         delivered = sender.send(alert.message)
         with conn:
-            # ON CONFLICT DO NOTHING is portable across SQLite and PostgreSQL.
+            # Upsert so a prior delivered=False row is upgraded when a retry succeeds.
             conn.execute(
                 "INSERT INTO alerts_log (alert_id, rule_id, fired_at, payload) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT(alert_id) DO NOTHING",
+                "VALUES (?, ?, ?, ?) ON CONFLICT(alert_id) DO UPDATE SET "
+                "fired_at = excluded.fired_at, payload = excluded.payload",
                 (alert.dedup_key, alert.rule_id, now, f"delivered={delivered}"),
             )
-        sent += 1
+        if delivered:
+            sent += 1
     log.info("Alerts: %d fired, %d newly sent.", len(fired), sent)
     return len(fired), sent

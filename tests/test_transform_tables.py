@@ -395,39 +395,41 @@ def test_value_accrual_table_needs_tvl_and_mcap(conn, settings) -> None:
 
 def test_dca_vs_baseline_edge(conn, settings) -> None:
     cid = next(a["coingecko_id"] for a in settings.assets if a["symbol"] == "BTC")
-    # Two buys: 0.01@100 and 0.01@200 -> avg entry 150 (invested 3 / tokens 0.02).
+    # Buys: 1@100 and 1@300 over [01-01, 01-10] -> avg entry 200 (invested 400 / 2 tokens).
     upsert_trades(
         conn,
         pd.DataFrame(
             [
                 {"trade_id": "1", "exchange": "binance", "symbol": "BTC/USDT", "side": "buy",
-                 "ts": "2026-01-01T00:00:00+00:00", "price": 100.0, "amount": 0.01, "cost": 1.0,
+                 "ts": "2026-01-01T00:00:00+00:00", "price": 100.0, "amount": 1.0, "cost": 100.0,
                  "fee": 0.0, "fee_currency": "USDT"},
                 {"trade_id": "2", "exchange": "binance", "symbol": "BTC/USDT", "side": "buy",
-                 "ts": "2026-01-10T00:00:00+00:00", "price": 200.0, "amount": 0.01, "cost": 2.0,
+                 "ts": "2026-01-10T00:00:00+00:00", "price": 300.0, "amount": 1.0, "cost": 300.0,
                  "fee": 0.0, "fee_currency": "USDT"},
             ]
         ),
     )
-    # Price history covering the window (min <= first buy). Window mean (>= 2026-01-01)
-    # = mean(200, 300) = 250; current (latest) = 300.
+    # History covers the window start (2025-12-31 <= 01-01). Blind-DCA baseline = HARMONIC
+    # mean of prices in [01-01, 01-10] = harmonic(100, 300) = 150 (the 01-15 point is after
+    # last_buy and excluded). Current (latest) = 300.
     upsert_observations(
         conn,
         pd.DataFrame(
             [
                 _obs(f"{cid}:price", "2025-12-31T00:00:00+00:00", 100.0),
-                _obs(f"{cid}:price", "2026-01-05T00:00:00+00:00", 200.0),
+                _obs(f"{cid}:price", "2026-01-02T00:00:00+00:00", 100.0),
+                _obs(f"{cid}:price", "2026-01-09T00:00:00+00:00", 300.0),
                 _obs(f"{cid}:price", "2026-01-15T00:00:00+00:00", 300.0),
             ]
         ),
     )
     btc = dca_vs_baseline_table(conn, settings).iloc[0]
-    assert btc["avg_entry"] == pytest.approx(150.0)
+    assert btc["avg_entry"] == pytest.approx(200.0)
     assert btc["current_price"] == pytest.approx(300.0)
-    assert btc["actual_ret_pct"] == pytest.approx(100.0)  # 300/150 - 1
-    assert btc["baseline_avg"] == pytest.approx(250.0)
-    assert btc["baseline_ret_pct"] == pytest.approx(20.0)  # 300/250 - 1
-    assert btc["edge_pp"] == pytest.approx(80.0)  # 100 - 20
+    assert btc["actual_ret_pct"] == pytest.approx(50.0)  # 300/200 - 1
+    assert btc["baseline_avg"] == pytest.approx(150.0)  # harmonic(100, 300), window <= last_buy
+    assert btc["baseline_ret_pct"] == pytest.approx(100.0)  # 300/150 - 1
+    assert btc["edge_pp"] == pytest.approx(-50.0)  # 50 - 100
 
 
 def test_dca_vs_baseline_no_history_no_baseline(conn, settings) -> None:

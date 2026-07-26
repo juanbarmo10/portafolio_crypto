@@ -48,13 +48,16 @@ def evaluate_signal(
     """Forward-return stats for a signal vs. the unconditional baseline, per horizon.
 
     Returns ``{horizon: {n_signal, n_baseline, mean_signal, mean_baseline, edge, pvalue}}``
-    where ``edge`` = mean_signal - mean_baseline (percentage points).
+    where ``edge`` = mean_signal - mean_baseline (percentage points). The baseline is the
+    set of **non-signal** dates (disjoint from the signal), so the permutation test compares
+    two exchangeable groups instead of a set against its own superset (which biases it).
     """
-    all_dates = list(prices.dropna().index)
+    signal_set = set(signal_dates)
+    non_signal_dates = [d for d in prices.dropna().index if d not in signal_set]
     out: dict[int, dict[str, Any]] = {}
     for h in horizons:
         sig = [r for d in signal_dates if (r := forward_return(prices, d, h)) is not None]
-        base = [r for d in all_dates if (r := forward_return(prices, d, h)) is not None]
+        base = [r for d in non_signal_dates if (r := forward_return(prices, d, h)) is not None]
         mean_sig = float(np.mean(sig)) if sig else None
         mean_base = float(np.mean(base)) if base else None
         out[h] = {

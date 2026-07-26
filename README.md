@@ -235,7 +235,7 @@ evitar el problema del `&` al sourcear).
 > proyecto (sección 8). Esto es un resultado *preliminar y honesto*, no una recomendación.
 
 **Señal probada:** funding z-score alto (≥1.0, ventana 90 d, *point-in-time*) → retorno a 7 días
-del cierre del perp, contra baseline de todas las fechas, con p-valor por bootstrap (permutación).
+del cierre del perp, contra baseline de las fechas **sin señal**, con p-valor por bootstrap (permutación).
 **Hipótesis:** largos hacinados (funding alto) → corrección → *edge* negativo.
 
 | Activo | n | señal % | base % | edge (pp) | p |
@@ -268,8 +268,8 @@ Paso a paso (código en `validation/`):
    como señal las fechas con `z ≥ umbral`.
 2. **Retorno forward** (`forward_return`): desde cada fecha, el retorno a `horizon` días del cierre
    del perp (mismo venue que el funding).
-3. **Baseline** (`evaluate_signal`): el mismo retorno forward sobre **todas** las fechas, no solo las
-   de señal — el "¿y si hubiera entrado en cualquier día?".
+3. **Baseline** (`evaluate_signal`): el mismo retorno forward sobre las fechas **sin señal**
+   (disjuntas de la señal, para que la prueba de permutación compare dos grupos intercambiables).
 4. **Significancia** (`bootstrap_mean_diff_pvalue`): test de **permutación** — reasigna al azar las
    etiquetas señal/baseline miles de veces y mide con qué frecuencia el azar reproduce un *edge* tan
    grande como el observado. Eso es el p-valor.

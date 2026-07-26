@@ -476,6 +476,33 @@ def _usd_price(
     return _val(latest_observation(conn, "coingecko", f"{coingecko_id}:price"))
 
 
+def _usd_price_asof(
+    conn: sqlite3.Connection,
+    asset: str,
+    id_by_symbol: dict[str, str],
+    price_aliases: dict[str, str] | None,
+    ts: str,
+) -> float | None:
+    """USD price of an asset **as of** ``ts`` (latest price on/before it), else latest.
+
+    Used to value fees at the price when the fee was paid, not today's price — matters
+    for non-stablecoin fee currencies (e.g. BNB). $1 for stablecoins.
+    """
+    if asset in STABLECOINS:
+        return 1.0
+    coingecko_id = id_by_symbol.get(asset) or (price_aliases or {}).get(asset)
+    if not coingecko_id:
+        return None
+    row = conn.execute(
+        "SELECT value FROM observations WHERE source = 'coingecko' AND series_id = ? "
+        "AND ts <= ? ORDER BY ts DESC LIMIT 1",
+        (f"{coingecko_id}:price", ts),
+    ).fetchone()
+    if row and row[0] is not None:
+        return float(row[0])
+    return _val(latest_observation(conn, "coingecko", f"{coingecko_id}:price"))
+
+
 def normalize_asset(asset: str, aliases: dict[str, str], priceable: set[str]) -> str:
     """Map a Binance balance code to its priceable underlying asset.
 
@@ -615,11 +642,13 @@ def holdings_by_group(
 def dca_vs_baseline_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
     """Compare real buy trades against a blind-DCA baseline (§2 behavioral goal).
 
-    For each accumulated asset: your **average entry price** vs. the **mean daily price
-    over the accumulation window** (what buying on a fixed cadence would have averaged).
-    ``edge_pp`` = your return minus the baseline's; positive = your timing beat blindly
-    averaging in. The baseline needs price history covering the window start, so it shows
-    None until backfilled (``run_ingest.py --backfill``) — honest, not a fake number.
+    For each accumulated asset: your **average entry price** vs. what **blind fixed-dollar
+    DCA over the same accumulation window** ``[first_buy, last_buy]`` would have cost — the
+    **harmonic** mean of daily prices there (``n / Σ 1/p``), which is the realized average of
+    investing a fixed dollar amount each period. ``edge_pp`` = your return minus the
+    baseline's; positive = your timing beat blindly averaging in. The baseline needs price
+    history covering the window start, so it shows None until backfilled
+    (``run_ingest.py --backfill``) — honest, not a fake number.
 
     Returns per-asset columns [symbol, n_buys, tokens, invested_usd, avg_entry,
     current_price, value_now, actual_ret_pct, baseline_avg, baseline_ret_pct, edge_pp],
@@ -635,13 +664,16 @@ def dca_vs_baseline_table(conn: sqlite3.Connection, settings: Settings) -> pd.Da
         base = symbol.split("/")[0]
         if base in STABLECOINS:
             continue
-        a = agg.setdefault(base, {"tokens": 0.0, "invested": 0.0, "n_buys": 0, "first_ts": ts})
+        a = agg.setdefault(
+            base, {"tokens": 0.0, "invested": 0.0, "n_buys": 0, "first_ts": ts, "last_ts": ts}
+        )
         sign = 1.0 if side == "buy" else -1.0
         a["tokens"] += sign * (amount or 0.0)
         a["invested"] += sign * (cost or 0.0)
         if side == "buy":
             a["n_buys"] += 1
         a["first_ts"] = min(a["first_ts"], ts)
+        a["last_ts"] = max(a["last_ts"], ts)
 
     rows: list[dict[str, Any]] = []
     for base, a in agg.items():
@@ -656,11 +688,16 @@ def dca_vs_baseline_table(conn: sqlite3.Connection, settings: Settings) -> pd.Da
         baseline_avg = baseline_ret = edge = None
         hist = series_history(conn, "coingecko", f"{cid}:price").dropna()
         if not hist.empty:
-            first = pd.Timestamp(a["first_ts"])
-            if hist.index.min() <= first:  # history actually covers the accumulation window
-                window = hist[hist.index >= first]
+            first, last = pd.Timestamp(a["first_ts"]), pd.Timestamp(a["last_ts"])
+            # Blind DCA = fixed dollars per period over the SAME accumulation window
+            # [first_buy, last_buy]; its realized cost is the HARMONIC mean of prices
+            # (n / Σ 1/p), not the arithmetic mean. Only compute when history covers the
+            # window start (else the mean is biased by missing early prices).
+            if hist.index.min() <= first:
+                window = hist[(hist.index >= first) & (hist.index <= last)]
+                window = window[window > 0]
                 if len(window) >= 2:
-                    baseline_avg = float(window.mean())
+                    baseline_avg = float(len(window) / (1.0 / window).sum())  # harmonic mean
                     if current and baseline_avg:
                         baseline_ret = (current / baseline_avg - 1.0) * 100.0
                         if actual_ret is not None:
@@ -845,11 +882,12 @@ def wallet_pnl_history(conn: sqlite3.Connection, settings: Settings) -> pd.Serie
 def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Aggregate real executed trades (level 4): invested, proceeds, fees, count.
 
-    Fees are converted to USD best-effort: stablecoin fees at $1, other fee assets via
-    the latest CoinGecko price; any fee that cannot be priced is counted as unconverted.
+    Fees are converted to USD best-effort: stablecoin fees at $1, other fee assets via the
+    CoinGecko price **as of the trade date** (not today's); any fee that cannot be priced is
+    counted as unconverted.
     """
     trades = conn.execute(
-        "SELECT side, cost, fee, fee_currency FROM trades"
+        "SELECT side, cost, fee, fee_currency, ts FROM trades"
     ).fetchall()
     if not trades:
         return {"has_trades": False}
@@ -858,13 +896,17 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
     price_aliases = settings.source("binance_account").get("price_aliases", {}) or {}
     invested = proceeds = fees_usd = 0.0
     fees_unconverted = 0
-    for side, cost, fee, fee_currency in trades:
+    for side, cost, fee, fee_currency, ts in trades:
         if side == "buy" and cost is not None:
             invested += cost
         elif side == "sell" and cost is not None:
             proceeds += cost
         if fee:
-            price = _usd_price(conn, fee_currency, id_by_symbol, price_aliases) if fee_currency else None
+            price = (
+                _usd_price_asof(conn, fee_currency, id_by_symbol, price_aliases, ts)
+                if fee_currency
+                else None
+            )
             if price is not None:
                 fees_usd += fee * price
             else:

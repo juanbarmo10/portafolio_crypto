@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from ingest.binance_account import TRADE_COLUMNS, parse_earn, parse_trades
+from ingest.binance_account import TRADE_COLUMNS, parse_convert, parse_earn, parse_trades
 
 
 def _ccxt_trade(**overrides) -> dict:
@@ -38,6 +38,32 @@ def test_parse_trades_maps_fields() -> None:
     assert row["fee"] == 0.065
     assert row["fee_currency"] == "USDT"
     assert row["ts"].startswith("2026-07-23")
+
+
+def test_parse_convert_buy_sell_and_skips() -> None:
+    records = [
+        # USDT -> XRP: a BUY of XRP (recovers cost basis for a Convert-acquired token).
+        {"orderId": 1, "orderStatus": "SUCCESS", "fromAsset": "USDT", "fromAmount": "100",
+         "toAsset": "XRP", "toAmount": "50", "createTime": 1_700_000_000_000},
+        # BNB -> USDT: a SELL of BNB.
+        {"orderId": 2, "orderStatus": "SUCCESS", "fromAsset": "BNB", "fromAmount": "0.5",
+         "toAsset": "USDT", "toAmount": "300", "createTime": 1_700_100_000_000},
+        # BTC -> ETH: crypto->crypto, no stable leg -> skipped.
+        {"orderId": 3, "orderStatus": "SUCCESS", "fromAsset": "BTC", "fromAmount": "0.01",
+         "toAsset": "ETH", "toAmount": "0.3", "createTime": 1_700_200_000_000},
+        # Not successful -> skipped.
+        {"orderId": 4, "orderStatus": "PROCESS", "fromAsset": "USDT", "fromAmount": "10",
+         "toAsset": "XRP", "toAmount": "5", "createTime": 1_700_300_000_000},
+    ]
+    rows = parse_convert(records)
+    assert [r["trade_id"] for r in rows] == ["binance-convert:1", "binance-convert:2"]
+    buy = rows[0]
+    assert buy["symbol"] == "XRP/USDT" and buy["side"] == "buy"
+    assert buy["amount"] == 50.0 and buy["cost"] == 100.0 and buy["price"] == 2.0
+    assert set(TRADE_COLUMNS) <= set(buy)
+    sell = rows[1]
+    assert sell["symbol"] == "BNB/USDT" and sell["side"] == "sell"
+    assert sell["amount"] == 0.5 and sell["cost"] == 300.0
 
 
 def test_parse_trades_skips_without_id_or_timestamp() -> None:

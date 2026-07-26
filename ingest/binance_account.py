@@ -116,6 +116,54 @@ def _as_float(value: object) -> float | None:
         return None
 
 
+_STABLES = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
+
+
+def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[dict[str, Any]]:
+    """Convert Binance **Convert** records to trades-table rows (pure, testable).
+
+    A convert ``fromAsset -> toAsset`` is a **buy** of toAsset when paid with a stablecoin,
+    or a **sell** of fromAsset when received into a stablecoin — this recovers cost basis
+    for tokens acquired via Convert (which never appear in spot fills). Crypto->crypto (no
+    stable leg) is skipped: its USD cost basis can't be derived here. Keyed by orderId so
+    re-ingesting is idempotent. Only SUCCESS orders are kept.
+    """
+    stables = stables or _STABLES
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if str(rec.get("orderStatus", "SUCCESS")).upper() != "SUCCESS":
+            continue
+        oid = rec.get("orderId")
+        from_a, to_a = rec.get("fromAsset"), rec.get("toAsset")
+        from_amt, to_amt = _as_float(rec.get("fromAmount")), _as_float(rec.get("toAmount"))
+        ts_ms = rec.get("createTime")
+        if oid is None or not (from_a and to_a and from_amt and to_amt and ts_ms):
+            continue
+        if from_a in stables and to_a not in stables:
+            symbol, side, amount, cost = f"{to_a}/{from_a}", "buy", to_amt, from_amt
+        elif to_a in stables and from_a not in stables:
+            symbol, side, amount, cost = f"{from_a}/{to_a}", "sell", from_amt, to_amt
+        else:
+            continue  # crypto->crypto or stable->stable: no USD cost basis to derive
+        rows.append(
+            {
+                "trade_id": f"binance-convert:{oid}",
+                "exchange": "binance-convert",
+                "symbol": symbol,
+                "side": side,
+                "ts": datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00"
+                ),
+                "price": (cost / amount) if amount else None,
+                "amount": amount,
+                "cost": cost,
+                "fee": 0.0,
+                "fee_currency": None,
+            }
+        )
+    return rows
+
+
 class BinanceAccountIngester(Ingester):
     """Read-only Binance holdings (via fetch()) and trade history (via fetch_trades())."""
 
@@ -219,11 +267,33 @@ class BinanceAccountIngester(Ingester):
         df = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
         return self.validate(df)
 
-    def fetch_trades(self) -> pd.DataFrame:
-        """Return executed trades (READ-ONLY) for tracked + currently-held pairs.
+    def _fetch_convert_raw(self, since_ms: int) -> list[dict]:
+        """Raw Binance Convert records since ``since_ms``, in <=30-day windows (API cap)."""
+        now = self._exchange.milliseconds()
+        window = 30 * 24 * 3600 * 1000
+        out: list[dict] = []
+        start = since_ms
+        while start < now:
+            end = min(start + window, now)
+            try:
+                resp = retry(
+                    lambda s=start, e=end: self._exchange.sapiGetConvertTradeFlow(
+                        {"startTime": s, "endTime": e, "limit": 1000}
+                    ),
+                    exceptions=(ccxt.NetworkError,),
+                )
+                out.extend(resp.get("list", []) or [])
+            except Exception:  # noqa: BLE001 — isolate per-window failures
+                log.exception("Binance convert: window %s-%s failed", start, end)
+            start = end
+        return out
 
-        Scans ``<ASSET>/<quote>`` for the union of tracked assets (§5) and assets with
-        a non-zero balance. Markets that don't exist or have no trades are skipped.
+    def fetch_trades(self) -> pd.DataFrame:
+        """Return executed trades (READ-ONLY): spot fills **and** Convert conversions.
+
+        Spot: scans ``<ASSET>/<quote>`` for tracked (§5) + held assets. Convert: recovers
+        cost basis for tokens bought via Binance Convert (never appear as spot fills — the
+        reason some holdings had no cost basis). Markets/windows that fail are skipped.
         """
         self._exchange.load_markets()
         since = self._exchange.milliseconds() - self._trades_since_days * 24 * 3600 * 1000
@@ -245,6 +315,15 @@ class BinanceAccountIngester(Ingester):
                 continue
             rows.extend(parse_trades(raw, self.source))
 
+        spot_n = len(rows)
+        try:
+            rows.extend(parse_convert(self._fetch_convert_raw(since)))
+        except Exception:  # noqa: BLE001 — convert must not sink the spot trades
+            log.exception("Binance convert fetch failed")
+
         df = pd.DataFrame(rows, columns=TRADE_COLUMNS)
-        log.info("Binance trades: %d fills across %d symbols.", len(df), len(symbols))
+        log.info(
+            "Binance trades: %d spot fills (%d symbols) + %d convert -> %d total.",
+            spot_n, len(symbols), len(rows) - spot_n, len(df),
+        )
         return df

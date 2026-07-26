@@ -41,7 +41,10 @@ def settings():
     """
     load_settings.cache_clear()
     s = load_settings()
-    s.raw.get("sources", {}).get("binance_account", {})["manual_holdings"] = []
+    # Isolate tests from any real config/settings.local.yaml (manual_holdings / cost_basis).
+    ba = s.raw.get("sources", {}).get("binance_account", {})
+    ba["manual_holdings"] = []
+    ba["cost_basis"] = {}
     yield s
     load_settings.cache_clear()
 
@@ -472,6 +475,34 @@ def test_wallet_pnl_from_trades(conn, settings) -> None:
     assert btc["pnl_usd"] == pytest.approx(50.0)
     assert btc["pnl_pct"] == pytest.approx(100.0)
     assert btc["source"] == "trades"
+
+
+def test_wallet_pnl_manual_overrides_trades(conn, settings) -> None:
+    # Manual cost basis wins over the trade-derived average (trades only see a window).
+    settings.raw["sources"]["binance_account"]["cost_basis"] = {"BTC": {"avg_price": 200.0}}
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [
+                {"trade_id": "1", "exchange": "binance", "symbol": "BTC/USDT", "side": "buy",
+                 "ts": "2026-01-01T00:00:00+00:00", "price": 100.0, "amount": 0.5, "cost": 50.0,
+                 "fee": 0.0, "fee_currency": "USDT"},
+            ]
+        ),
+    )
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 300.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.5, source="binance"),
+            ]
+        ),
+    )
+    btc = wallet_pnl_table(conn, settings).query("symbol == 'BTC'").iloc[0]
+    assert btc["source"] == "manual"
+    assert btc["avg_price"] == pytest.approx(200.0)  # manual, not the trade-derived 100
+    assert btc["pnl_pct"] == pytest.approx(50.0)  # 300/200 - 1
 
 
 def test_wallet_pnl_manual_cost_basis(conn, settings) -> None:

@@ -707,14 +707,30 @@ def position_cost_basis(
 
     Cost is modeled as ``avg_price × current amount`` so it stays consistent with the
     current holding even when trades cover only part of it (BTC: 5 fills but more held
-    via earn/Convert) — the trade average is extrapolated to the whole position. Manual
-    entries (Convert/wrapped/old buys) live in the gitignored ``settings.local.yaml``
-    under ``binance_account.cost_basis`` as ``{avg_price}`` or ``{invested_usd}``.
+    via earn/Convert) — the trade average is extrapolated to the whole position. **Manual
+    cost basis WINS over the trade-derived average**, because the exchange's lifetime
+    average is authoritative while ``trades`` only sees a 180-day window. Manual entries
+    live in the gitignored ``settings.local.yaml`` under ``binance_account.cost_basis`` as
+    ``{avg_price}`` or ``{invested_usd}``.
 
     Returns ``{symbol: {"avg_price": float, "source": "trades"|"manual"}}``.
     """
     amount_by_symbol = {r["asset"]: r["amount"] for r in holdings.to_dict("records")}
     out: dict[str, dict[str, Any]] = {}
+
+    # Manual cost basis first — it overrides the (windowed) trade average.
+    manual = settings.source("binance_account").get("cost_basis", {}) or {}
+    for symbol, spec in manual.items():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("avg_price") is not None:
+            out[symbol] = {"avg_price": float(spec["avg_price"]), "source": "manual"}
+        elif spec.get("invested_usd") is not None:
+            amt = amount_by_symbol.get(symbol)
+            if amt:
+                out[symbol] = {"avg_price": float(spec["invested_usd"]) / amt, "source": "manual"}
+
+    # Trade-derived average as a fallback for symbols without a manual entry.
     tagg: dict[str, dict[str, float]] = {}
     for symbol, side, amount, cost in conn.execute(
         "SELECT symbol, side, amount, cost FROM trades"
@@ -727,19 +743,8 @@ def position_cost_basis(
         t["invested"] += sign * (cost or 0.0)
         t["tokens"] += sign * (amount or 0.0)
     for base, t in tagg.items():
-        if t["tokens"] > 0 and t["invested"] > 0:
+        if base not in out and t["tokens"] > 0 and t["invested"] > 0:
             out[base] = {"avg_price": t["invested"] / t["tokens"], "source": "trades"}
-
-    manual = settings.source("binance_account").get("cost_basis", {}) or {}
-    for symbol, spec in manual.items():
-        if symbol in out or not isinstance(spec, dict):
-            continue
-        if spec.get("avg_price") is not None:
-            out[symbol] = {"avg_price": float(spec["avg_price"]), "source": "manual"}
-        elif spec.get("invested_usd") is not None:
-            amt = amount_by_symbol.get(symbol)
-            if amt:
-                out[symbol] = {"avg_price": float(spec["invested_usd"]) / amt, "source": "manual"}
     return out
 
 

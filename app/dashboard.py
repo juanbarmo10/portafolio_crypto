@@ -46,6 +46,7 @@ from transform.indicators import (
     earn_rewards_summary,
     execution_summary,
     holdings_by_group,
+    liquidations_summary,
     holdings_table,
     macro_table,
     portfolio_table,
@@ -569,6 +570,15 @@ def _section_market_structure(conn, settings) -> None:
         )
     else:
         st.info("Sin datos de derivados. Ejecuta `python run_ingest.py` (extra `.[markets]`).")
+
+    liq = liquidations_summary(conn, settings)
+    if liq.get("has_liq"):
+        st.caption(
+            f"**Liquidaciones (último día):** longs {_fmt_big_usd(liq['long_usd'])} · "
+            f"shorts {_fmt_big_usd(liq['short_usd'])}. Más longs liquidados = capitulación / "
+            "riesgo de cascada; más shorts = combustible de short-squeeze (nivel 2). "
+            "Requiere el daemon `run_liquidations.py`."
+        )
 
     # Upcoming unlocks (manual config, sección 5: revisar siempre).
     unlocks = _upcoming_unlocks(settings, within_days=30)

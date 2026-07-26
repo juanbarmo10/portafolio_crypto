@@ -1,0 +1,14 @@
+[Unit]
+Description=cryptodash liquidations collector (Binance forceOrder WebSocket -> DB)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/juanb/Research_Lab/projects/portafolio_crypto
+ExecStart=/home/juanb/Research_Lab/projects/portafolio_crypto/.venv/bin/python run_liquidations.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

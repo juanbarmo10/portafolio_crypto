@@ -111,3 +111,18 @@ Ver próximos disparos: `systemctl --user list-timers 'cryptodash*'`.
 Para que la **ingesta pública** corra sin tu equipo, un workflow de **GitHub Actions** (cron gratis)
 puede ejecutar `run_ingest.py --public` contra Neon con `DATABASE_URL` como *secret* del repo.
 **Nunca** pongas claves de cuenta de Binance en un runner alojado (§ seguridad).
+
+## Daemon de liquidaciones (opcional, nivel 2)
+
+Binance solo publica liquidaciones por WebSocket (`!forceOrder@arr`), así que
+`run_liquidations.py` corre como **daemon** que agrega totales diarios de liquidaciones
+(long vs short) a la DB. Es **dato público** (se sincroniza a Neon como el resto).
+
+```bash
+cp deploy/cryptodash-liquidations.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cryptodash-liquidations.service   # daemon persistente (Restart=always)
+journalctl --user -u cryptodash-liquidations.service -f          # logs
+```
+
+Sin el daemon, la línea "Liquidaciones" del panel simplemente no aparece.

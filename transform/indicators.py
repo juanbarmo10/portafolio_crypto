@@ -1025,3 +1025,25 @@ def earn_rewards_summary(conn: sqlite3.Connection, settings: Settings) -> dict[s
             total_usd += usd
         per_asset.append({"asset": asset, "amount": amount, "usd": usd})
     return {"has_rewards": bool(per_asset), "total_usd": total_usd, "per_asset": per_asset}
+
+
+def liquidations_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Latest daily liquidation totals (USD) across tracked assets: long vs short (level 2).
+
+    Reads ``<SYMBOL>:liq_long/short:binance`` (from the liquidations daemon). Long > short
+    liquidations = longs being flushed (cascade risk / capitulation); the reverse can fuel
+    a short squeeze.
+    """
+    long_usd = short_usd = 0.0
+    per_asset: list[dict[str, Any]] = []
+    for asset in settings.assets:
+        sym = asset["symbol"]
+        lo = _val(latest_observation(conn, "derivatives", f"{sym}:liq_long:binance"))
+        sh = _val(latest_observation(conn, "derivatives", f"{sym}:liq_short:binance"))
+        if lo or sh:
+            long_usd += lo or 0.0
+            short_usd += sh or 0.0
+            per_asset.append({"asset": sym, "long": lo, "short": sh})
+    if not per_asset:
+        return {"has_liq": False}
+    return {"has_liq": True, "long_usd": long_usd, "short_usd": short_usd, "per_asset": per_asset}

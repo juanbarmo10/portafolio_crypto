@@ -31,23 +31,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import altair as alt
-import pandas as pd
-import streamlit as st
+import altair as alt  # noqa: E402
+import pandas as pd  # noqa: E402
+import streamlit as st  # noqa: E402
 
-from core.config import load_settings
-from db.loader import init_db
-from db.queries import series_history, upcoming_events
-from validation.backtest import funding_zscore_backtest
-from transform.indicators import (
+from core.config import load_settings  # noqa: E402
+from db.loader import init_db  # noqa: E402
+from db.queries import series_history, upcoming_events  # noqa: E402
+from transform.indicators import (  # noqa: E402
     capital_deployed_summary,
     dca_status,
     dca_vs_baseline_table,
     earn_rewards_summary,
     execution_summary,
     holdings_by_group,
-    liquidations_summary,
     holdings_table,
+    liquidations_summary,
     macro_table,
     portfolio_table,
     thesis_invalidation_table,
@@ -57,7 +56,8 @@ from transform.indicators import (
     wallet_pnl_table,
     wallet_value_history,
 )
-from transform.rally_quality import (
+from validation.backtest import funding_zscore_backtest  # noqa: E402
+from transform.rally_quality import (  # noqa: E402
     RALLY_CAPITULATION,
     RALLY_CONVICTION,
     RALLY_DISTRIBUTION,

@@ -18,7 +18,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,app,markets]"
       - name: Lint (ruff)
-        run: ruff check .
+        run: |
+          ruff --version
+          ruff check .
       - name: Tests (pytest)
         # No secrets/network needed: parsers are pure (monkeypatched), the DB is a local
         # temp SQLite, and key-dependent ingesters are skipped when the keys are absent.

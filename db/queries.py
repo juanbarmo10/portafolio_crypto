@@ -11,6 +11,7 @@ objects. None of them touch the network.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -78,3 +79,38 @@ def latest_by_source(conn: sqlite3.Connection, source: str) -> dict[str, float]:
         (source, source),
     ).fetchall()
     return {sid: float(val) for sid, val in rows if val is not None}
+
+
+def upcoming_events(
+    conn: sqlite3.Connection, within_days: int = 7, categories: tuple[str, ...] | None = None
+) -> list[dict]:
+    """Events whose ts falls in [today, today + within_days], ascending by date.
+
+    Reads the ``events`` table (populated by the FRED release-date ingester and any
+    other calendar source). Optionally filters by category (e.g. ('macro',)).
+
+    Returns:
+        List of {category, date (ISO), label, days_until, payload}, soonest first.
+    """
+    today = datetime.now(timezone.utc).date()
+    horizon = today + timedelta(days=within_days)
+    rows = conn.execute("SELECT category, ts, label, payload FROM events").fetchall()
+    out: list[dict] = []
+    for category, ts, label, payload in rows:
+        if categories and category not in categories:
+            continue
+        try:
+            date = datetime.fromisoformat(ts).date()
+        except (ValueError, TypeError):
+            continue
+        if today <= date <= horizon:
+            out.append(
+                {
+                    "category": category,
+                    "date": date.isoformat(),
+                    "label": label,
+                    "days_until": (date - today).days,
+                    "payload": payload,
+                }
+            )
+    return sorted(out, key=lambda e: e["date"])

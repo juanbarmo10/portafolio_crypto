@@ -15,6 +15,7 @@ Rule kinds (evaluators):
     tvl_drop             A thesis's TVL fell >= X% over 7 days (possible invalidation).
     unlock_soon          A tracked asset unlocks within N days (from assets_meta).
     monthly_dca_reminder Monthly contribution reminder with level 1/2 context.
+    macro_release_soon   A high-impact macro release (CPI/PCE/NFP) or FOMC within N days.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from typing import Any, Callable
 
 from core.config import Settings
 from core.logging_setup import get_logger
+from db.queries import upcoming_events
 from transform.indicators import macro_table
 from transform.rally_quality import etf_flow_summary, market_structure_table
 
@@ -153,12 +155,47 @@ def _monthly_dca_reminder(conn: sqlite3.Connection, settings: Settings, params: 
     return [Alert("monthly_dca_reminder", f"monthly_dca_reminder:{now:%Y-%m}", message)]
 
 
+def _macro_release_soon(conn: sqlite3.Connection, settings: Settings, params: dict) -> list[Alert]:
+    """High-impact macro release (CPI/PCE/NFP) or FOMC within N days -> 'no DCA today'."""
+    within = int(params.get("within_days", 3))
+    out: list[Alert] = []
+    for e in upcoming_events(conn, within_days=within, categories=("macro",)):
+        when = "hoy" if e["days_until"] == 0 else f"en {e['days_until']} d"
+        out.append(
+            Alert(
+                "macro_release_soon",
+                f"macro_release_soon:{e['label']}:{e['date']}",
+                f"📅 *Release macro* — {e['label']} el *{e['date']}* ({when}). Evento de alto "
+                f"impacto: no ejecutes el tramo de DCA todavía; espera al dato (niveles 1 y 4).",
+            )
+        )
+    today = datetime.now(timezone.utc).date()
+    for raw in settings.raw.get("macro_calendar", {}).get("fomc_dates", []) or []:
+        try:
+            date = datetime.strptime(str(raw), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days = (date - today).days
+        if 0 <= days <= within:
+            when = "hoy" if days == 0 else f"en {days} d"
+            out.append(
+                Alert(
+                    "macro_release_soon",
+                    f"macro_release_soon:FOMC:{raw}",
+                    f"🏛️ *FOMC* — decisión de tipos el *{raw}* ({when}). No ejecutes el tramo de "
+                    f"DCA hasta después del anuncio (niveles 1 y 4).",
+                )
+            )
+    return out
+
+
 _EVALUATORS: dict[str, Callable[[sqlite3.Connection, Settings, dict], list[Alert]]] = {
     "etf_outflow_streak": _etf_outflow_streak,
     "funding_crowded": _funding_crowded,
     "tvl_drop": _tvl_drop,
     "unlock_soon": _unlock_soon,
     "monthly_dca_reminder": _monthly_dca_reminder,
+    "macro_release_soon": _macro_release_soon,
 }
 
 

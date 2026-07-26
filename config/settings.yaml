@@ -79,6 +79,14 @@ sources:
     request_timeout_s: 20
     # Drop reference dates before this when fetching initial releases.
     observation_start: "2015-01-01"
+    # Calendario de releases macro (endpoint gratuito FRED release/dates). release_id
+    # verificado contra la API en vivo (2026-07-25). Alimenta el strip de "próximos
+    # eventos" y la regla de alerta macro_release_soon.
+    releases:
+      - {release_id: 10, label: "CPI"}
+      - {release_id: 54, label: "PCE (Personal Income & Outlays)"}
+      - {release_id: 50, label: "NFP (Employment Situation)"}
+    releases_horizon_days: 45   # cuánto futuro traer del calendario de releases
     # Each series: code (FRED id), label (display name), description (hover tooltip
     # shown in the dashboard). Labels/descriptions live here, never hardcoded (§10).
     series:
@@ -216,6 +224,13 @@ assets:
 # --- Derived-indicator thresholds --------------------------------------------
 # Placeholders to be calibrated after observing 2-4 weeks of real data
 # (CLAUDE.md section 12 open decision). Kept in config, never in code.
+# --- Calendario macro manual (FOMC) -------------------------------------------
+# No hay release de datos FRED para las decisiones del FOMC, así que sus fechas se
+# listan a mano (calendario oficial de la Fed en federalreserve.gov). CPI/PCE/NFP se
+# obtienen automáticamente de FRED (sources.fred.releases). ISO YYYY-MM-DD.
+macro_calendar:
+  fomc_dates: []
+
 indicators:
   dilution_ratio_alert: 0.6   # circulating/max below this => high dilution risk (section 8, SUI case)
   funding_zscore_window_days: 90
@@ -239,6 +254,7 @@ alerts:
     - {id: tvl_drop,           kind: tvl_drop,           pct: 20}
     - {id: unlock_soon,        kind: unlock_soon,        within_days: 7}
     - {id: monthly_dca_reminder, kind: monthly_dca_reminder, day_of_month: 1}
+    - {id: macro_release_soon, kind: macro_release_soon, within_days: 3}
 
 # --- Thesis categories (CLAUDE.md section 5) ---------------------------------
 # Brief explanation per thesis category, shown in the Tesis table. Diversification

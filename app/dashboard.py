@@ -37,7 +37,7 @@ import streamlit as st
 
 from core.config import load_settings
 from db.loader import init_db
-from db.queries import series_history
+from db.queries import series_history, upcoming_events
 from validation.backtest import funding_zscore_backtest
 from transform.indicators import (
     dca_status,
@@ -431,6 +431,51 @@ def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, i
         if 0 <= days <= within_days:
             out.append((symbol, str(raw), days))
     return sorted(out, key=lambda item: item[2])
+
+
+def _events_strip(conn, settings) -> None:
+    """Top strip: high-impact macro releases + FOMC + token unlocks in the next 7 days.
+
+    Answers "¿hay un release/unlock en los próximos 7 días?" (checklist niveles 1 y 4):
+    si lo hay, considerar posponer el tramo de DCA. Estático, de consulta semanal.
+    """
+    today = datetime.now(timezone.utc).date()
+    # (days_until, date, material-icon, label, note)
+    items: list[tuple[int, str, str, str, str]] = []
+    for e in upcoming_events(conn, within_days=7, categories=("macro",)):
+        items.append((e["days_until"], e["date"], ":material/calendar_month:", e["label"], "release macro"))
+    for raw in settings.raw.get("macro_calendar", {}).get("fomc_dates", []) or []:
+        try:
+            d = datetime.strptime(str(raw), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days = (d - today).days
+        if 0 <= days <= 7:
+            items.append((days, str(raw), ":material/account_balance:", "FOMC", "decisión de tipos"))
+    for sym, date, days in _upcoming_unlocks(settings, within_days=7):
+        items.append((days, date, ":material/lock_open:", f"Unlock {sym}", "desbloqueo de tokens"))
+
+    st.subheader("Próximos 7 días", anchor="eventos")
+    if not items:
+        st.caption(
+            "Sin releases macro, FOMC ni unlocks en los próximos 7 días — nada que aconseje "
+            "posponer el tramo de DCA (niveles 1 y 4)."
+        )
+        return
+    items.sort(key=lambda x: x[0])
+    shown = items[:6]
+    for col, (days, date, icon, label, note) in zip(st.columns(len(shown)), shown, strict=False):
+        when = "hoy" if days == 0 else ("mañana" if days == 1 else f"en {days} d")
+        color = "red" if days <= 1 else "orange" if days <= 3 else "green"
+        with col.container(border=True):
+            st.markdown(f"{icon} **{label}**")
+            st.markdown(f":{color}[{when}] · {date}")
+            st.caption(note)
+    tail = f" (+{len(items) - 6} más)" if len(items) > 6 else ""
+    st.caption(
+        "Si hay un release de alto impacto en <7 días, considera **posponer** el tramo de DCA "
+        f"(niveles 1 y 4). CPI/PCE/NFP vía FRED; FOMC y unlocks por configuración.{tail}"
+    )
 
 
 def _section_market_structure(conn, settings) -> None:
@@ -892,7 +937,9 @@ def _sidebar_nav(settings) -> None:
         st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in checklist))
         st.caption("Niveles 1→4 en orden (sección 2): el macro manda sobre la tesis del activo.")
         st.divider()
-        st.markdown("**Extra**\n\n- [Validación de señales](#validacion)")
+        st.markdown(
+            "**Extra**\n\n- [Próximos 7 días](#eventos)\n- [Validación de señales](#validacion)"
+        )
 
 
 def main() -> None:
@@ -915,6 +962,8 @@ def main() -> None:
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
             "Frecuencia de consulta óptima: semanal (sección 2)."
         )
+        _events_strip(conn, settings)
+        st.divider()
         _section_macro(conn, settings)
         st.divider()
         _section_portfolio(conn, settings)

@@ -169,3 +169,44 @@ def upsert_trades(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
         conn.executemany(_UPSERT_TRADE_SQL, records)
     log.info("Upserted %d trades.", len(records))
     return len(records)
+
+
+EVENT_COLUMNS = ["event_id", "category", "ts", "label", "payload"]
+
+_UPSERT_EVENT_SQL = """
+INSERT INTO events (event_id, category, ts, label, payload)
+VALUES (:event_id, :category, :ts, :label, :payload)
+ON CONFLICT(event_id) DO UPDATE SET
+    category = excluded.category, ts = excluded.ts,
+    label = excluded.label, payload = excluded.payload
+"""
+
+
+def upsert_events(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """Idempotently upsert calendar events (keyed by event_id).
+
+    Args:
+        conn: Open connection with the schema applied.
+        df: DataFrame with at least ``EVENT_COLUMNS`` (payload is a JSON string or None).
+
+    Returns:
+        Number of event rows submitted. Re-running does not duplicate (ON CONFLICT).
+
+    Raises:
+        ValueError: If required columns are missing (fail loudly, section 10).
+    """
+    missing = [c for c in EVENT_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Events DataFrame missing required columns: {missing}.")
+    if df.empty:
+        log.info("No events to upsert.")
+        return 0
+
+    records = [
+        {c: (None if pd.isna(v := getattr(row, c)) else v) for c in EVENT_COLUMNS}
+        for row in df[EVENT_COLUMNS].itertuples(index=False)
+    ]
+    with conn:
+        conn.executemany(_UPSERT_EVENT_SQL, records)
+    log.info("Upserted %d events.", len(records))
+    return len(records)

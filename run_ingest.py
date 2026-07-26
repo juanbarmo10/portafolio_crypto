@@ -23,7 +23,7 @@ import sys
 
 from core.config import Settings, load_settings
 from core.logging_setup import configure_logging, get_logger
-from db.loader import init_db, upsert_observations, upsert_trades
+from db.loader import init_db, upsert_events, upsert_observations, upsert_trades
 from ingest.base import Ingester
 from ingest.binance_account import BinanceAccountIngester
 from ingest.coingecko import CoinGeckoIngester
@@ -31,6 +31,7 @@ from ingest.defillama import DefiLlamaIngester
 from ingest.derivatives import DerivativesIngester
 from ingest.etf_flows import EtfFlowsIngester
 from ingest.fred import FredIngester
+from ingest.fred_releases import FredReleasesIngester
 
 log = get_logger(__name__)
 
@@ -56,6 +57,10 @@ def build_ingesters(settings: Settings, public: bool = False) -> list[Ingester]:
         ingesters.append(FredIngester(settings))
     except RuntimeError as exc:
         log.warning("Skipping FRED ingester: %s", exc)
+    try:
+        ingesters.append(FredReleasesIngester(settings))
+    except RuntimeError as exc:
+        log.warning("Skipping FRED releases ingester: %s", exc)
     if public:
         log.info("Public ingest: skipping the Binance account sync (no private holdings).")
     else:
@@ -123,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
                 # Some ingesters also produce trades (Binance account, level 4).
                 if hasattr(ingester, "fetch_trades"):
                     upsert_trades(conn, ingester.fetch_trades())
+                # ...or calendar events (FRED release dates -> events strip / alerts).
+                if hasattr(ingester, "fetch_events"):
+                    upsert_events(conn, ingester.fetch_events())
             except Exception:  # noqa: BLE001 — log, keep going, fail loudly at the end
                 failures += 1
                 log.exception("Ingester %s failed.", name)

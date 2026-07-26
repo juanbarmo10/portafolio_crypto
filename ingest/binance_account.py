@@ -233,6 +233,9 @@ class BinanceAccountIngester(Ingester):
         cfg = settings.source("binance_account")
         self._quote: str = cfg.get("quote", "USDT")
         self._trades_since_days: int = int(cfg.get("trades_since_days", 180))
+        # Historical reconstructions (Convert, Earn rewards, capital flows) want the full
+        # history, not just the recent spot-trade window — older Converts are cost basis too.
+        self._history_since_days: int = int(cfg.get("history_since_days", 365))
         self._timeout: int = int(cfg.get("request_timeout_ms", 20000))
         self._wallets: list[str] = cfg.get("wallets", ["spot", "funding", "earn"])
         self._tracked: list[str] = [a["symbol"] for a in settings.assets]
@@ -261,22 +264,39 @@ class BinanceAccountIngester(Ingester):
         return parse_earn(flexible, locked)
 
     def _earn_rewards(self) -> dict[str, float]:
-        """Simple Earn reward amounts per asset over the window (flexible + locked)."""
+        """Simple Earn reward amounts per asset (flexible + locked), in <=30-day windows.
+
+        The rewards-history endpoint rejects wide ranges (error -6021), so the lookback is
+        chunked; per-window failures are isolated and the rest still sum.
+        """
         now = self._exchange.milliseconds()
-        since = now - self._trades_since_days * 24 * 3600 * 1000
-        flexible = retry(
-            lambda: self._exchange.sapiGetSimpleEarnFlexibleHistoryRewardsRecord(
-                {"type": "REWARDS", "startTime": since, "endTime": now, "size": 100}
-            ),
-            exceptions=(ccxt.NetworkError,),
-        )
-        locked = retry(
-            lambda: self._exchange.sapiGetSimpleEarnLockedHistoryRewardsRecord(
-                {"startTime": since, "endTime": now, "size": 100}
-            ),
-            exceptions=(ccxt.NetworkError,),
-        )
-        return parse_earn_rewards(flexible, locked)
+        since = now - self._history_since_days * 24 * 3600 * 1000
+        window = 30 * 24 * 3600 * 1000
+        responses: list[object] = []
+        start = since
+        while start < now:
+            end = min(start + window, now)
+            try:
+                responses.append(
+                    retry(
+                        lambda s=start, e=end: self._exchange.sapiGetSimpleEarnFlexibleHistoryRewardsRecord(
+                            {"type": "REWARDS", "startTime": s, "endTime": e, "size": 100}
+                        ),
+                        exceptions=(ccxt.NetworkError,),
+                    )
+                )
+                responses.append(
+                    retry(
+                        lambda s=start, e=end: self._exchange.sapiGetSimpleEarnLockedHistoryRewardsRecord(
+                            {"startTime": s, "endTime": e, "size": 100}
+                        ),
+                        exceptions=(ccxt.NetworkError,),
+                    )
+                )
+            except Exception:  # noqa: BLE001 — isolate a bad window, keep the rest
+                log.exception("Binance earn rewards: window %s-%s failed", start, end)
+            start = end
+        return parse_earn_rewards(*responses)
 
     def _wallet_balances(self, wallet: str) -> dict[str, float]:
         """Return {asset: amount} for one wallet. 'earn' uses the Simple Earn endpoint."""
@@ -404,7 +424,8 @@ class BinanceAccountIngester(Ingester):
 
         spot_n = len(rows)
         try:
-            rows.extend(parse_convert(self._fetch_convert_raw(since)))
+            convert_since = self._exchange.milliseconds() - self._history_since_days * 24 * 3600 * 1000
+            rows.extend(parse_convert(self._fetch_convert_raw(convert_since)))
         except Exception:  # noqa: BLE001 — convert must not sink the spot trades
             log.exception("Binance convert fetch failed")
 
@@ -425,7 +446,7 @@ class BinanceAccountIngester(Ingester):
         fx = {k.upper(): float(v) for k, v in (cfg.get("fx_to_usd", {}) or {}).items()}
         fx.setdefault("USD", 1.0)
         now = self._exchange.milliseconds()
-        since = now - self._trades_since_days * 24 * 3600 * 1000
+        since = now - self._history_since_days * 24 * 3600 * 1000
         window = 90 * 24 * 3600 * 1000
         rows: list[dict[str, Any]] = []
         for kind, tx_type in (("deposit", "0"), ("withdraw", "1")):

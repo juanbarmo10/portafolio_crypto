@@ -569,6 +569,8 @@ def test_execution_summary_from_trades(conn, settings) -> None:
     assert summary["net_invested_usd"] == pytest.approx(840.0)
     assert summary["fees_usd"] == pytest.approx(0.84)  # stablecoin fees at $1
     assert summary["fees_unconverted"] == 0
+    assert summary["fees_drag_pct"] == pytest.approx(0.84 / 840.0 * 100)  # fee drag %
+    assert summary["fees_per_trade_usd"] == pytest.approx(0.42)
 
 
 def test_execution_summary_no_trades(conn, settings) -> None:

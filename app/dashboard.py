@@ -961,6 +961,18 @@ def _wallet_pnl_view(conn, settings) -> None:
     c2.metric("Coste (posiciones con base)", _fmt_usd(tc))
     c3.metric("PnL no realizado", _fmt_signed_usd(tp), delta=f"{tp / tc * 100:+.1f}%" if tc else None)
 
+    exec_sum = execution_summary(conn, settings)
+    drag = exec_sum.get("fees_drag_pct") if exec_sum.get("has_trades") else None
+    if drag is not None:
+        per = exec_sum.get("fees_per_trade_usd")
+        st.caption(
+            f"**Arrastre de comisiones:** {_fmt_usd(exec_sum['fees_usd'])} en "
+            f"{exec_sum['n_trades']} operaciones = **{drag:.2f}%** del capital desplegado"
+            + (f" ({_fmt_usd(per)}/operación)" if per is not None else "")
+            + ". Lastre material con tickets pequeños (secciones 1, 4): cada compra paga comisión, "
+            "así que muchas compras pequeñas erosionan más que pocas grandes."
+        )
+
     show = pd.DataFrame(
         {
             "Logo": [settings.meta_for(s).get("logo_url") or "" for s in df["symbol"]],

@@ -878,4 +878,9 @@ def execution_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str,
         "net_invested_usd": invested - proceeds,
         "fees_usd": fees_usd,
         "fees_unconverted": fees_unconverted,
+        # Fee drag: commissions as a share of gross capital deployed. Material for the
+        # small ~$17 tickets this portfolio uses (sections 1, 4) — every buy pays the
+        # taker fee, so many small buys erode more than a few large ones.
+        "fees_drag_pct": (fees_usd / invested * 100.0) if invested else None,
+        "fees_per_trade_usd": (fees_usd / len(trades)) if trades else None,
     }

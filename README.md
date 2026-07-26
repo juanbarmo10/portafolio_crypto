@@ -74,7 +74,7 @@ Incluye hasta ahora:
   no medibles); **vista de *value accrual*** (scatter TVL vs. mcap + ranking MC/TVL — el *concepto
   rector*: ¿el precio sigue a la actividad on-chain?); y **tracker DCA vs. baseline** (entrada media
   real vs. DCA ciego, con *edge* del *timing*); y **PnL por activo** (coste medio de tus operaciones,
-  o `cost_basis` manual para tokens sin trades) con **gráficos de valor y PnL histórico**
+  o `cost_basis` manual para tokens sin trades) con **arrastre de comisiones** y **gráficos de valor y PnL histórico**
   (simulación de mantener: tenencias actuales a precios históricos). Incluye **backfill histórico de
   precios** (`run_ingest.py --backfill`, CoinGecko `/market_chart`) que da historia real a
   variaciones, drill-down, baseline y a esos gráficos.
@@ -84,7 +84,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 135) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 136) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
 
@@ -283,7 +283,7 @@ interna del proyecto.
 ## Tests
 
 ```bash
-pytest            # suite completa (135)
+pytest            # suite completa (136)
 ruff check .      # linting
 ```
 

@@ -383,6 +383,41 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
     return df
 
 
+def value_accrual_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Protocol activity (TVL) vs. valuation (market cap) — the *concepto rector* (§2).
+
+    The central question for a token is: does price track the activity the protocol
+    captures? MC/TVL is the proxy — high = valuation ran ahead of on-chain activity
+    (weak value accrual / rich); low = cheap relative to activity. Only assets with a
+    tracked TVL **and** a market cap are included (revenue is not yet ingested — a future
+    enhancement; TVL is today's activity proxy).
+
+    Returns columns [symbol, thesis_category, tvl, mcap, mc_tvl, logo_url].
+    """
+    rows: list[dict[str, Any]] = []
+    for asset in settings.assets:
+        dl = asset.get("defillama")
+        if not dl:
+            continue
+        hist = series_history(conn, "defillama", f"{dl['slug']}:tvl")
+        tvl = float(hist.iloc[-1]) if not hist.dropna().empty else None
+        mcap = _val(latest_observation(conn, "coingecko", f"{asset['coingecko_id']}:market_cap"))
+        if not tvl or mcap is None:
+            continue
+        meta = settings.meta_for(asset["symbol"])
+        rows.append(
+            {
+                "symbol": asset["symbol"],
+                "thesis_category": asset["thesis_category"],
+                "tvl": tvl,
+                "mcap": mcap,
+                "mc_tvl": mc_tvl_ratio(mcap, tvl),
+                "logo_url": meta.get("logo_url"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def dca_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Level-4 execution state read from dca_plan: next tranche, deployed, fees.
 

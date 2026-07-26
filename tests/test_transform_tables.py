@@ -24,6 +24,7 @@ from transform.indicators import (
     portfolio_table,
     thesis_invalidation_table,
     thesis_tvl_table,
+    value_accrual_table,
 )
 
 
@@ -362,6 +363,28 @@ def test_thesis_invalidation_flags_tvl_drop(conn, settings) -> None:
     assert aave["status"] == "red"
     assert "TVL" in aave["reason"]
     assert board.iloc[0]["status"] in {"red", "amber"}  # sorted worst-first
+
+
+def test_value_accrual_table_needs_tvl_and_mcap(conn, settings) -> None:
+    # AAVE has TVL 500M and mcap 2B -> MC/TVL = 4.0; included. No mcap -> excluded.
+    slug = next(a["defillama"]["slug"] for a in settings.assets if a["symbol"] == "AAVE")
+    cid = next(a["coingecko_id"] for a in settings.assets if a["symbol"] == "AAVE")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs(f"{slug}:tvl", now, 500_000_000.0, source="defillama"),
+                _obs(f"{cid}:market_cap", now, 2_000_000_000.0, source="coingecko"),
+            ]
+        ),
+    )
+    df = value_accrual_table(conn, settings)
+    aave = df[df["symbol"] == "AAVE"].iloc[0]
+    assert aave["mc_tvl"] == pytest.approx(4.0)
+    assert aave["tvl"] == pytest.approx(500_000_000.0)
+    # An asset with TVL config but no market cap in the DB is excluded (no valuation).
+    assert "XRP" not in set(df["symbol"])  # XRP has no defillama slug -> never included
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

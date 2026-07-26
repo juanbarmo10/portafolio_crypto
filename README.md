@@ -68,15 +68,20 @@ Incluye hasta ahora:
   asignación** de la cartera (por categoría de tesis y por activo, Altair); **drill-down por clic**
   en las tablas Macro y Tesis → gráfico de línea del historial diario de la serie; y la **tabla de
   validación** (backtest honesto) embebida y cacheada. Todo estático/diario, sin intradía (sección 11).
+- **Análisis nuevo (Fase 5, Prioridad 2):** **strip de "Próximos 7 días"** (releases macro CPI/PCE/NFP
+  vía FRED `release/dates` + FOMC/unlocks de config; cierra la alerta `macro_release_soon`); **tablero
+  de invalidación de tesis** (semáforo verde/ámbar/rojo por activo, honesto sobre métricas cualitativas
+  no medibles); y **vista de *value accrual*** (scatter TVL vs. mcap + ranking MC/TVL — el *concepto
+  rector*: ¿el precio sigue a la actividad on-chain?).
 - **Alertas** (`run_alerts.py`): motor declarativo (`alerts.rules` en config) — racha de salidas
-  ETF, funding z extremo, caída de TVL, unlock próximo, recordatorio de aporte mensual — con
-  entrega por Telegram (dry-run si no hay bot) y dedup por `alerts_log`.
+  ETF, funding z extremo, caída de TVL, unlock próximo, recordatorio de aporte mensual, **release
+  macro/FOMC inminente** — con entrega por Telegram (dry-run si no hay bot) y dedup por `alerts_log`.
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 124) de esquema, idempotencia, config (incl. override local), indicadores,
-  rally-quality, alertas, validación, parsers de ingesta (incl. fixture Farside congelado),
-  holdings (incl. agrupación para donuts) y humo de render.
+- Tests (`pytest`, 129) de esquema, idempotencia, config (incl. override local), indicadores,
+  rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
+  accrual, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
 
 ## Requisitos
 
@@ -268,7 +273,7 @@ interna del proyecto.
 ## Tests
 
 ```bash
-pytest            # suite completa (124)
+pytest            # suite completa (129)
 ruff check .      # linting
 ```
 

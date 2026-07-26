@@ -48,6 +48,7 @@ from transform.indicators import (
     portfolio_table,
     thesis_invalidation_table,
     thesis_tvl_table,
+    value_accrual_table,
 )
 from transform.rally_quality import (
     RALLY_CAPITULATION,
@@ -645,6 +646,7 @@ def _section_thesis(conn, settings) -> None:
             _drilldown_chart(conn, ref[0], ref[1], ref[2])
 
     _thesis_invalidation_board(conn, settings)
+    _value_accrual_view(conn, settings)
 
 
 _INVALIDATION_LABEL = {"red": "🔴 Riesgo", "amber": "🟠 Vigilar", "green": "🟢 OK", "na": "⚪ s/d"}
@@ -698,6 +700,61 @@ def _thesis_invalidation_board(conn, settings) -> None:
         "🟠 vigilar · 🟢 sin alerta · ⚪ métrica **cualitativa**, no medible con estos datos "
         "(p. ej. demanda de token de HBAR, riesgo regulatorio de BNB). Basado en TVL, dilución y "
         "unlocks; no captura invalidaciones cualitativas."
+    )
+
+
+def _value_accrual_view(conn, settings) -> None:
+    """Scatter + ranking of activity (TVL) vs. valuation (mcap) — value accrual (§2)."""
+    df = value_accrual_table(conn, settings)
+    if df.empty:
+        return
+    st.subheader("Value accrual — actividad (TVL) vs. valoración (mcap)")
+    # Altair 6.2 can't serialize a pandas-3.0 DataFrame -> feed records via alt.Data.
+    records = [
+        {
+            "symbol": r["symbol"],
+            "tvl": r["tvl"],
+            "mcap": r["mcap"],
+            "mc_tvl": round(r["mc_tvl"], 3) if r["mc_tvl"] is not None else None,
+        }
+        for r in df.to_dict("records")
+    ]
+    data = alt.Data(values=records)
+    # High MC/TVL = valuation ahead of activity -> red; low = cheap -> green.
+    color = alt.Color(
+        "mc_tvl:Q", scale=alt.Scale(scheme="redyellowgreen", reverse=True), title="MC/TVL"
+    )
+    tooltip = [
+        alt.Tooltip("symbol:N", title="Activo"),
+        alt.Tooltip("tvl:Q", title="TVL", format=",.0f"),
+        alt.Tooltip("mcap:Q", title="Mcap", format=",.0f"),
+        alt.Tooltip("mc_tvl:Q", title="MC/TVL", format=".2f"),
+    ]
+    pts = alt.Chart(data).mark_circle(size=160, opacity=0.85).encode(
+        x=alt.X("tvl:Q", scale=alt.Scale(type="log"), title="TVL (USD, escala log)"),
+        y=alt.Y("mcap:Q", scale=alt.Scale(type="log"), title="Capitalización (USD, escala log)"),
+        color=color,
+        tooltip=tooltip,
+    )
+    labels = alt.Chart(data).mark_text(dy=-13, fontSize=11).encode(
+        x=alt.X("tvl:Q", scale=alt.Scale(type="log")),
+        y=alt.Y("mcap:Q", scale=alt.Scale(type="log")),
+        text="symbol:N",
+    )
+    bar = alt.Chart(data).mark_bar().encode(
+        x=alt.X("mc_tvl:Q", title="MC/TVL (menor = más barato vs. actividad)"),
+        y=alt.Y("symbol:N", sort="x", title=None),
+        color=color.copy(),
+        tooltip=tooltip,
+    )
+    c1, c2 = st.columns([3, 2])
+    c1.altair_chart((pts + labels).properties(height=360), width="stretch")
+    c2.altair_chart(bar.properties(height=360), width="stretch")
+    st.caption(
+        "El *concepto rector* (sección 2): ¿el precio sigue a la actividad que el protocolo "
+        "captura? **MC/TVL alto (rojo)** = valoración por delante de la actividad on-chain (cara); "
+        "**bajo (verde)** = barata respecto a su actividad. Esa brecha es la tesis de inversión. "
+        "Proxy de actividad = TVL (aún no se ingiere *revenue*; mejora futura)."
     )
 
 

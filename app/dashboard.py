@@ -46,6 +46,7 @@ from transform.indicators import (
     holdings_table,
     macro_table,
     portfolio_table,
+    thesis_invalidation_table,
     thesis_tvl_table,
 )
 from transform.rally_quality import (
@@ -642,6 +643,62 @@ def _section_thesis(conn, settings) -> None:
             st.info("Este activo no tiene TVL rastreado (p. ej. BTC, XRP, TAO): sin historial que mostrar.")
         else:
             _drilldown_chart(conn, ref[0], ref[1], ref[2])
+
+    _thesis_invalidation_board(conn, settings)
+
+
+_INVALIDATION_LABEL = {"red": "🔴 Riesgo", "amber": "🟠 Vigilar", "green": "🟢 OK", "na": "⚪ s/d"}
+
+
+def _color_invalidation(cell: object) -> str:
+    """Styler CSS for the invalidation status cell (red/amber/green/gray)."""
+    s = str(cell)
+    if "Riesgo" in s:
+        return "color:#dc2626;font-weight:600"
+    if "Vigilar" in s:
+        return "color:#eab308;font-weight:600"
+    if "OK" in s:
+        return "color:#16a34a;font-weight:600"
+    return "color:#9ca3af"
+
+
+def _thesis_invalidation_board(conn, settings) -> None:
+    """Green/amber/red board of each asset's thesis-invalidation status (level 3)."""
+    df = thesis_invalidation_table(conn, settings)
+    if df.empty:
+        return
+    st.subheader("Tablero de invalidación de tesis")
+    show = pd.DataFrame(
+        {
+            "Logo": [r.get("logo_url") or "" for r in df.to_dict("records")],
+            "Activo": df["symbol"],
+            "Estado": df["status"].map(_INVALIDATION_LABEL),
+            "Motivo": df["reason"],
+            "Métrica de invalidación": df["invalidation"],
+        }
+    )
+    styler = show.style.map(_color_invalidation, subset=["Estado"])
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Estado": st.column_config.TextColumn(
+                help="Semáforo a partir de señales cuantitativas: caída de TVL 7d, dilución "
+                "alta (circ/máx), y unlock próximo. Toma la peor señal aplicable."
+            ),
+            "Métrica de invalidación": st.column_config.TextColumn(
+                width="large", help="Qué rompería la tesis del activo (nivel 3)."
+            ),
+        },
+    )
+    st.caption(
+        "Semáforo de la tesis por activo (nivel 3): 🔴 una señal de invalidación cruzó umbral · "
+        "🟠 vigilar · 🟢 sin alerta · ⚪ métrica **cualitativa**, no medible con estos datos "
+        "(p. ej. demanda de token de HBAR, riesgo regulatorio de BNB). Basado en TVL, dilución y "
+        "unlocks; no captura invalidaciones cualitativas."
+    )
 
 
 def _donut(df: pd.DataFrame, title: str) -> alt.Chart | None:

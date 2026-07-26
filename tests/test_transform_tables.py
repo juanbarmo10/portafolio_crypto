@@ -7,6 +7,7 @@ have the right shape and values — no network involved.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +22,7 @@ from transform.indicators import (
     holdings_table,
     macro_table,
     portfolio_table,
+    thesis_invalidation_table,
     thesis_tvl_table,
 )
 
@@ -338,6 +340,28 @@ def test_holdings_by_group_empty(settings) -> None:
     out = holdings_by_group(pd.DataFrame(), settings)
     assert out.empty
     assert list(out.columns) == ["group", "value_usd", "weight_pct"]
+
+
+def test_thesis_invalidation_flags_tvl_drop(conn, settings) -> None:
+    # A >20% TVL drop over 7d on a tracked protocol -> red status with a TVL reason.
+    slug = next(a["defillama"]["slug"] for a in settings.assets if a["symbol"] == "AAVE")
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=8)).strftime("%Y-%m-%dT00:00:00+00:00")
+    recent = now.strftime("%Y-%m-%dT00:00:00+00:00")
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs(f"{slug}:tvl", old, 100.0, source="defillama"),
+                _obs(f"{slug}:tvl", recent, 70.0, source="defillama"),
+            ]
+        ),
+    )
+    board = thesis_invalidation_table(conn, settings)
+    aave = board[board["symbol"] == "AAVE"].iloc[0]
+    assert aave["status"] == "red"
+    assert "TVL" in aave["reason"]
+    assert board.iloc[0]["status"] in {"red", "amber"}  # sorted worst-first
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

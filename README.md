@@ -136,6 +136,43 @@ python run_validation.py --z 1.5 --horizon 7
 `run_ingest.py` es idempotente: ejecutarlo dos veces no duplica filas. El panel es
 *pull* — refleja el último `run_ingest.py`; no hay auto-refresh (decisión de diseño, sección 2).
 
+## Calendario de eventos (strip de "Próximos 7 días")
+
+El panel muestra arriba un strip con los eventos de alto impacto de los próximos 7 días
+(si hay uno, conviene **posponer** el tramo de DCA). Combina **tres** fuentes; cada una se
+alimenta de forma distinta:
+
+| Evento | Fuente | Cómo se actualiza |
+|---|---|---|
+| **CPI / PCE / NFP** | FRED `release/dates` (gratis) | **Automático.** Se descarga al ejecutar `python run_ingest.py` (necesita `FRED_API_KEY`). Se guarda en la tabla `events`. |
+| **FOMC** | Manual (`config/settings.yaml`) | **A mano** — FRED no publica fecha del FOMC. Ver abajo. |
+| **Unlocks** | Manual (`config/assets_meta.yaml`) | **A mano** — campo `next_unlock` por token. |
+
+**Fechas del FOMC (manual).** Añade las fechas de decisión del calendario oficial de la Fed
+([federalreserve.gov/monetarypolicy](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)),
+en formato ISO `AAAA-MM-DD`, en `config/settings.yaml`:
+
+```yaml
+macro_calendar:
+  fomc_dates:
+    - "2026-07-29"   # segundo día de la reunión = día del anuncio
+    - "2026-09-16"
+    - "2026-10-28"
+    - "2026-12-09"
+```
+
+**Unlocks (manual).** Añade la próxima fecha de desbloqueo por token en `config/assets_meta.yaml`:
+
+```yaml
+SUI:
+  next_unlock: "2026-08-01"
+```
+
+Ambos se leen **directamente de config** (no requieren `run_ingest.py`), así que aparecen en el
+strip en cuanto guardas el archivo y refrescas. Solo CPI/PCE/NFP dependen de la ingesta de FRED.
+Las mismas fechas alimentan la alerta `macro_release_soon` (avisa "no ejecutes el DCA" si hay un
+release o FOMC dentro de 3 días).
+
 ## Rutina diaria (mantener la DB al día)
 
 Con los timers de systemd instalados (ver `deploy/README.md`), **no tienes que ejecutar nada

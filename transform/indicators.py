@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -279,6 +280,105 @@ def thesis_tvl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFra
     if not df.empty:
         df = df.sort_values(
             ["thesis_category", "tvl"], ascending=[True, False], na_position="last"
+        ).reset_index(drop=True)
+    return df
+
+
+# Status severity ranking (higher = worse) for the invalidation board.
+_STATUS_ORDER = {"red": 3, "amber": 2, "green": 1, "na": 0}
+_STATUS_BY_SEVERITY = {3: "red", 2: "amber", 1: "green", 0: "na"}
+
+
+def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Per-asset thesis-invalidation status from the quantitative signals we track (level 3).
+
+    Maps each asset's measurable signals to a green/amber/red light:
+      * TVL 7d drop  -> red at ``tvl_drop_pct_7d_alert`` (default 20%), amber at half.
+      * Dilution     -> amber when circulating/max < ``dilution_ratio_alert`` (structural).
+      * Next unlock  -> red within 7 days, amber within 30 (selling pressure event).
+    The status is the worst applicable signal. Assets with no measurable signal (e.g. XRP,
+    or tokens whose invalidation is qualitative — HBAR's token demand, BNB's regulatory
+    risk) get status ``na`` — the board is honest about what it can and cannot measure.
+
+    Returns columns [symbol, thesis_category, status, reason, invalidation, logo_url],
+    sorted worst-first.
+    """
+    ind = settings.raw.get("indicators", {})
+    tvl_red = float(ind.get("tvl_drop_pct_7d_alert", 20.0))
+    tvl_amber = tvl_red / 2.0
+    dil_alert = float(ind.get("dilution_ratio_alert", 0.6))
+    today = datetime.now(timezone.utc).date()
+
+    rows: list[dict[str, Any]] = []
+    for asset in settings.assets:
+        symbol = asset["symbol"]
+        meta = settings.meta_for(symbol)
+        severity = 0
+        measurable = False
+        reasons: list[str] = []
+
+        dl = asset.get("defillama")
+        if dl:
+            tvl_7d = pct_change_over_days(series_history(conn, "defillama", f"{dl['slug']}:tvl"), 7)
+            if tvl_7d is not None:
+                measurable = True
+                if tvl_7d <= -tvl_red:
+                    severity = max(severity, 3)
+                    reasons.append(f"TVL {tvl_7d:.0f}% 7d")
+                elif tvl_7d <= -tvl_amber:
+                    severity = max(severity, 2)
+                    reasons.append(f"TVL {tvl_7d:.0f}% 7d")
+                else:
+                    severity = max(severity, 1)
+
+        cid = asset["coingecko_id"]
+        dil = dilution_ratio(
+            _val(latest_observation(conn, "coingecko", f"{cid}:circulating_supply")),
+            _val(latest_observation(conn, "coingecko", f"{cid}:max_supply")),
+        )
+        if dil is not None:
+            measurable = True
+            if dil < dil_alert:
+                severity = max(severity, 2)
+                reasons.append(f"dilución alta (circ/máx {dil:.2f})")
+            else:
+                severity = max(severity, 1)
+
+        raw_unlock = meta.get("next_unlock")
+        if raw_unlock:
+            try:
+                unlock_days = (datetime.strptime(str(raw_unlock), "%Y-%m-%d").date() - today).days
+            except ValueError:
+                unlock_days = None
+            if unlock_days is not None and unlock_days >= 0:
+                measurable = True
+                if unlock_days <= 7:
+                    severity = max(severity, 3)
+                    reasons.append(f"unlock en {unlock_days} d")
+                elif unlock_days <= 30:
+                    severity = max(severity, 2)
+                    reasons.append(f"unlock en {unlock_days} d")
+
+        status = _STATUS_BY_SEVERITY[severity] if measurable else "na"
+        if reasons:
+            reason = ", ".join(reasons)
+        else:
+            reason = "sin señal de alerta" if measurable else "métrica cualitativa (no medible aquí)"
+        rows.append(
+            {
+                "symbol": symbol,
+                "thesis_category": asset["thesis_category"],
+                "status": status,
+                "reason": reason,
+                "invalidation": meta.get("description", ""),
+                "logo_url": meta.get("logo_url"),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(
+            "status", key=lambda s: s.map(lambda v: -_STATUS_ORDER[v])
         ).reset_index(drop=True)
     return df
 

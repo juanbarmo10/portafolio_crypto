@@ -142,3 +142,19 @@ def test_parse_market_chart_dedups_by_day():
     assert d29["ts"] == "2026-01-29T00:00:00+00:00"
     assert d29["source"] == "coingecko"
     assert set(OBSERVATION_COLUMNS) <= set(d29)
+
+
+def test_parse_long_short():
+    """Binance long/short account ratio -> daily observation rows (pure)."""
+    from ingest.derivatives import parse_long_short
+
+    records = [
+        {"symbol": "BTCUSDT", "longShortRatio": "1.85", "timestamp": 1_700_000_000_000},
+        {"symbol": "BTCUSDT", "longShortRatio": None, "timestamp": 1_700_086_400_000},  # skip
+    ]
+    rows = parse_long_short(records, "BTC")
+    assert len(rows) == 1
+    assert rows[0]["series_id"] == "BTC:long_short:binance"
+    assert rows[0]["value"] == 1.85
+    assert rows[0]["source"] == "derivatives"
+    assert set(OBSERVATION_COLUMNS) <= set(rows[0])

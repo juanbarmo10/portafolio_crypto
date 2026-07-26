@@ -161,6 +161,7 @@ def market_structure_table(
 
         price_chg = pct_change_over_days(close, divergence_days)
         oi_chg = pct_change_over_days(oi, divergence_days)
+        ls = series_history(conn, "derivatives", f"{symbol}:long_short:binance").dropna()
         rows.append(
             {
                 "symbol": symbol,
@@ -169,6 +170,7 @@ def market_structure_table(
                 "price_chg": price_chg,
                 "oi_chg": oi_chg,
                 "oi_chg_30d": pct_change_over_days(oi, 30),
+                "long_short": float(ls.iloc[-1]) if not ls.empty else None,
                 "rally_state": rally_state(price_chg, oi_chg),
             }
         )

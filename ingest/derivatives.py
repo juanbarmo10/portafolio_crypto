@@ -48,6 +48,33 @@ def _ms_to_iso_day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
 
 
+def parse_long_short(records: list[dict], symbol: str) -> list[dict[str, Any]]:
+    """Binance global long/short **account** ratio records -> observation rows (pure).
+
+    ``longShortRatio`` = long accounts / short accounts (>1 = retail crowded long, a Q2
+    crowding signal that complements funding z-score). series_id ``<SYMBOL>:long_short:binance``.
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        ratio = rec.get("longShortRatio")
+        ts = rec.get("timestamp")
+        if ratio is None or ts is None:
+            continue
+        try:
+            rows.append(
+                {
+                    "source": "derivatives",
+                    "series_id": f"{symbol}:long_short:binance",
+                    "ts": _ms_to_iso_day(int(ts)),
+                    "ts_release": None,
+                    "value": float(ratio),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return rows
+
+
 class DerivativesIngester(Ingester):
     """Fetch funding-rate and open-interest history for perp markets via ccxt."""
 
@@ -60,6 +87,7 @@ class DerivativesIngester(Ingester):
         self._quote: str = cfg.get("quote", "USDT")
         self._funding_days: int = int(cfg.get("funding_history_days", 90))
         self._oi_days: int = int(cfg.get("oi_history_days", 30))
+        self._ls_days: int = int(cfg.get("long_short_days", 30))
         self._timeout: int = int(cfg.get("request_timeout_ms", 20000))
         self._symbols: list[str] = [a["symbol"] for a in settings.assets]
 
@@ -160,6 +188,17 @@ class DerivativesIngester(Ingester):
             )
         return rows
 
+    def _long_short_rows(self, exchange: ccxt.Exchange, symbol: str) -> list[dict[str, Any]]:
+        """Binance global long/short account ratio (public futures data). Binance-only."""
+        pair = f"{symbol}{self._quote}"  # e.g. BTCUSDT
+        resp = retry(
+            lambda: exchange.fapiDataGetGlobalLongShortAccountRatio(
+                {"symbol": pair, "period": "1d", "limit": self._ls_days}
+            ),
+            exceptions=(ccxt.NetworkError,),
+        )
+        return parse_long_short(resp, symbol)
+
     def fetch(self) -> pd.DataFrame:
         """Return funding + OI history across exchanges as a long observations DataFrame."""
         rows: list[dict[str, Any]] = []
@@ -190,6 +229,11 @@ class DerivativesIngester(Ingester):
                     rows.extend(self._price_rows(exchange, exchange_id, symbol, market))
                 except Exception:  # noqa: BLE001
                     log.exception("derivatives: close %s %s failed", exchange_id, market)
+                if exchange_id == "binance":
+                    try:
+                        rows.extend(self._long_short_rows(exchange, symbol))
+                    except Exception:  # noqa: BLE001 — public data endpoint may vary
+                        log.exception("derivatives: long/short %s failed", symbol)
 
             log.info("derivatives: %s done (%d rows so far).", exchange_id, len(rows))
 

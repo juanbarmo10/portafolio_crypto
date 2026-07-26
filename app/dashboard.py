@@ -524,6 +524,7 @@ def _section_market_structure(conn, settings) -> None:
                 "Activo": r["symbol"],
                 "Estado": _rally_label(r["rally_state"]),
                 "Funding z": _fmt_funding_z(r["funding_z"]),
+                "L/S": _fmt_ratio(r.get("long_short")),
                 "Precio 7d": _fmt_change(r["price_chg"]),
                 "OI 7d": _fmt_change(r["oi_chg"]),
                 "OI 30d": _fmt_change(r["oi_chg_30d"]),
@@ -551,6 +552,10 @@ def _section_market_structure(conn, settings) -> None:
                 "Funding z": st.column_config.TextColumn(
                     help="Z-score del funding sobre 90 días. |z|≥2 (rojo) = posicionamiento "
                     "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
+                ),
+                "L/S": st.column_config.TextColumn(
+                    help="Ratio long/short de cuentas retail (Binance). >1 = mayoría en largos "
+                    "(hacinamiento alcista); <1 = mayoría en cortos. Complementa el funding z."
                 ),
                 "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
                 "OI 30d": st.column_config.TextColumn(

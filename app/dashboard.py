@@ -43,6 +43,7 @@ from transform.indicators import (
     capital_deployed_summary,
     dca_status,
     dca_vs_baseline_table,
+    earn_rewards_summary,
     execution_summary,
     holdings_by_group,
     holdings_table,
@@ -1015,6 +1016,16 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
                 f"{cap['unconverted']} movimiento(s) fiat sin tasa FX → excluidos del cómputo. "
                 "Añade `fx_to_usd` (p. ej. COP) en `config/settings.local.yaml` para incluirlos."
             )
+
+    earn = earn_rewards_summary(conn, settings)
+    if earn.get("has_rewards"):
+        detail = " · ".join(
+            f"{r['asset']} {_fmt_amount(r['amount'])}" for r in earn["per_asset"][:6]
+        )
+        st.caption(
+            f"**Rendimiento Earn (ventana):** {_fmt_usd(earn['total_usd'])} en recompensas de "
+            f"Simple Earn — {detail}. Ingreso pasivo que suma al retorno del nivel 4."
+        )
 
     show = pd.DataFrame(
         {

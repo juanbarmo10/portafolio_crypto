@@ -71,6 +71,23 @@ def parse_earn(flexible: object, locked: object) -> dict[str, float]:
     return out
 
 
+def parse_earn_rewards(*responses: object) -> dict[str, float]:
+    """Sum Simple Earn **reward** amounts per asset (passive yield). Pure, testable.
+
+    Each response is ``{"rows": [{"asset": ..., "rewards": ...}], ...}``. Rewards are paid
+    in the earning asset; summing over a window gives yield earned in that period.
+    """
+    totals: dict[str, float] = {}
+    for resp in responses:
+        rows = resp.get("rows", []) if isinstance(resp, dict) else []
+        for row in rows:
+            asset = row.get("asset")
+            amount = _as_float(row.get("rewards"))
+            if asset and amount:
+                totals[asset] = totals.get(asset, 0.0) + amount
+    return totals
+
+
 def parse_trades(raw_trades: list[dict], exchange: str) -> list[dict[str, Any]]:
     """Convert ccxt trade dicts to trades-table rows. Pure (no network), testable.
 
@@ -243,6 +260,24 @@ class BinanceAccountIngester(Ingester):
         )
         return parse_earn(flexible, locked)
 
+    def _earn_rewards(self) -> dict[str, float]:
+        """Simple Earn reward amounts per asset over the window (flexible + locked)."""
+        now = self._exchange.milliseconds()
+        since = now - self._trades_since_days * 24 * 3600 * 1000
+        flexible = retry(
+            lambda: self._exchange.sapiGetSimpleEarnFlexibleHistoryRewardsRecord(
+                {"type": "REWARDS", "startTime": since, "endTime": now, "size": 100}
+            ),
+            exceptions=(ccxt.NetworkError,),
+        )
+        locked = retry(
+            lambda: self._exchange.sapiGetSimpleEarnLockedHistoryRewardsRecord(
+                {"startTime": since, "endTime": now, "size": 100}
+            ),
+            exceptions=(ccxt.NetworkError,),
+        )
+        return parse_earn_rewards(flexible, locked)
+
     def _wallet_balances(self, wallet: str) -> dict[str, float]:
         """Return {asset: amount} for one wallet. 'earn' uses the Simple Earn endpoint."""
         if wallet == "earn":
@@ -300,6 +335,21 @@ class BinanceAccountIngester(Ingester):
                     }
                 )
             log.info("Binance wallet '%s': %d assets with balance.", wallet, len(balances))
+
+        # Passive yield: sum Simple Earn rewards over the window -> earn:<asset>:rewards.
+        try:
+            for asset, amount in self._earn_rewards().items():
+                rows.append(
+                    {
+                        "source": self.source,
+                        "series_id": f"earn:{asset}:rewards",
+                        "ts": ts,
+                        "ts_release": None,
+                        "value": amount,
+                    }
+                )
+        except Exception:  # noqa: BLE001 — Earn rewards optional; never abort holdings
+            log.exception("Binance: Earn rewards not accessible; skipping.")
 
         df = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
         return self.validate(df)

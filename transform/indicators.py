@@ -992,3 +992,36 @@ def capital_deployed_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "net_deployed_usd": deposits - withdrawals,
         "unconverted": unconverted,
     }
+
+
+def earn_rewards_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Passive yield earned via Simple Earn over the window (level 4).
+
+    Reads ``earn:<asset>:rewards`` observations (reward amount in the earning asset), values
+    each at the current price, and sums to USD. Rewards in an unpriceable asset are counted
+    but not summed.
+    """
+    series = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT series_id FROM observations "
+            "WHERE source = 'binance' AND series_id LIKE 'earn:%:rewards'"
+        ).fetchall()
+    ]
+    if not series:
+        return {"has_rewards": False}
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    price_aliases = settings.source("binance_account").get("price_aliases", {}) or {}
+    total_usd = 0.0
+    per_asset: list[dict[str, Any]] = []
+    for sid in series:
+        asset = sid.split(":")[1]
+        amount = _val(latest_observation(conn, "binance", sid))
+        if not amount:
+            continue
+        price = _usd_price(conn, asset, id_by_symbol, price_aliases)
+        usd = amount * price if price is not None else None
+        if usd:
+            total_usd += usd
+        per_asset.append({"asset": asset, "amount": amount, "usd": usd})
+    return {"has_rewards": bool(per_asset), "total_usd": total_usd, "per_asset": per_asset}

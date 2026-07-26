@@ -13,6 +13,7 @@ from ingest.binance_account import (
     TRADE_COLUMNS,
     parse_convert,
     parse_earn,
+    parse_earn_rewards,
     parse_fiat_flows,
     parse_trades,
 )
@@ -71,6 +72,18 @@ def test_parse_convert_buy_sell_and_skips() -> None:
     sell = rows[1]
     assert sell["symbol"] == "BNB/USDT" and sell["side"] == "sell"
     assert sell["amount"] == 0.5 and sell["cost"] == 300.0
+
+
+def test_parse_earn_rewards_sums_per_asset() -> None:
+    flexible = {"rows": [
+        {"asset": "BTC", "rewards": "0.0001"},
+        {"asset": "BTC", "rewards": "0.0002"},
+        {"asset": "USDT", "rewards": "1.5"},
+    ]}
+    locked = {"rows": [{"asset": "USDT", "rewards": "0.5"}]}
+    totals = parse_earn_rewards(flexible, locked)
+    assert totals["BTC"] == pytest.approx(0.0003)
+    assert totals["USDT"] == pytest.approx(2.0)
 
 
 def test_parse_fiat_flows_usd_and_unconverted() -> None:

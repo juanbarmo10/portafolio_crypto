@@ -37,6 +37,7 @@ from transform.indicators import (
     drift_vs_target,
     fed_net_liquidity_series,
     monthly_contribution_advice,
+    realized_pnl_fifo,
     regime_scoreboard,
     relative_premium_pct,
     rotation_summary,
@@ -49,6 +50,9 @@ from transform.rally_quality import market_structure_table
 def settings():
     load_settings.cache_clear()
     s = load_settings()
+    # Isolate régimen/advice tests from the real FOMC calendar (which changes over time and
+    # would otherwise make date-relative assertions flaky).
+    s.raw.setdefault("macro_calendar", {})["fomc_dates"] = []
     yield s
     load_settings.cache_clear()
 
@@ -436,6 +440,54 @@ def test_advice_postpone_on_event(conn, settings) -> None:
     assert a["recommendation"] == "postpone"
     assert a["postpone_days"] == 4  # 3 days out -> wait until after (3 + 1)
     assert a["blocking_events"] and a["blocking_events"][0]["label"] == "CPI"
+
+
+def _trade(tid: str, side: str, day: int, price: float, amount: float, cost: float) -> dict:
+    return {
+        "trade_id": tid, "exchange": "binance", "symbol": "SOL/USDT", "side": side,
+        "ts": _day(day), "price": price, "amount": amount, "cost": cost,
+        "fee": 0.0, "fee_currency": "USDT",
+    }
+
+
+def test_realized_pnl_fifo(conn, settings) -> None:
+    """D2: sells matched FIFO against the OLDEST buy lots -> realized gain."""
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [
+                _trade("b1", "buy", 1, 100.0, 1.0, 100.0),
+                _trade("b2", "buy", 2, 200.0, 1.0, 200.0),
+                _trade("s1", "sell", 3, 300.0, 1.0, 300.0),  # matches b1@100 -> +200
+                _trade("s2", "sell", 4, 250.0, 1.0, 250.0),  # matches b2@200 -> +50
+            ]
+        ),
+    )
+    row = realized_pnl_fifo(conn, settings).query("symbol == 'SOL'").iloc[0]
+    assert row["realized_pnl_usd"] == pytest.approx(250.0)
+    assert row["matched_qty"] == pytest.approx(2.0) and row["unmatched_qty"] == pytest.approx(0.0)
+
+
+def test_realized_pnl_fifo_unmatched(conn, settings) -> None:
+    """D2: selling more than was bought leaves an unmatched qty, excluded from realized PnL."""
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [_trade("b1", "buy", 1, 100.0, 1.0, 100.0), _trade("s1", "sell", 2, 300.0, 2.0, 600.0)]
+        ),
+    )
+    row = realized_pnl_fifo(conn, settings).query("symbol == 'SOL'").iloc[0]
+    assert row["realized_pnl_usd"] == pytest.approx(200.0)  # only the matched 1 unit counts
+    assert row["matched_qty"] == pytest.approx(1.0) and row["unmatched_qty"] == pytest.approx(1.0)
+
+
+def test_notify_ingest_failures_dryrun(settings) -> None:
+    """D1: the parser-failure alert dry-runs (returns False) with no bot, and never crashes."""
+    from run_ingest import notify_ingest_failures
+
+    settings.secrets.pop("TELEGRAM_TOKEN", None)
+    settings.secrets.pop("TELEGRAM_CHAT_ID", None)
+    assert notify_ingest_failures(settings, ["EtfFlowsIngester"]) is False
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

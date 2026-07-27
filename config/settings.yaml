@@ -319,8 +319,16 @@ assets:
 # No hay release de datos FRED para las decisiones del FOMC, así que sus fechas se
 # listan a mano (calendario oficial de la Fed en federalreserve.gov). CPI/PCE/NFP se
 # obtienen automáticamente de FRED (sources.fred.releases). ISO YYYY-MM-DD.
+# Cada reunión dura 2 días; se lista el **segundo día**, cuando se anuncia la decisión de
+# tipos (~14:00 ET) y el mercado se mueve — la fecha correcta para "esperar hasta después".
+# Calendario 2026 (D4): jun 16-17, jul 28-29, sep 15-16, oct 27-28, dic 8-9.
 macro_calendar:
-  fomc_dates: []
+  fomc_dates:
+    - "2026-06-17"
+    - "2026-07-29"
+    - "2026-09-16"
+    - "2026-10-28"
+    - "2026-12-09"
 
 indicators:
   dilution_ratio_alert: 0.6   # circulating/max below this => high dilution risk (section 8, SUI case)

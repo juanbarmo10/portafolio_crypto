@@ -942,6 +942,73 @@ def wallet_pnl_table(
     return df
 
 
+def realized_pnl_fifo(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Realized PnL per asset by FIFO-matching sells against buy lots (D2, level 4).
+
+    Complements the **unrealized** PnL (:func:`wallet_pnl_table`): when you sell, the realized
+    gain/loss is the sell price minus the cost of the **oldest unsold buy lots** (first-in,
+    first-out), summed. A sell with no matching buy in ``trades`` (e.g. selling coins acquired
+    via Earn/Convert outside the trade window) leaves an unmatched quantity — counted in
+    ``unmatched_qty`` and excluded from realized PnL rather than given a fictitious cost basis.
+    Gross of fees (see :func:`execution_summary` for fee totals). Empty until there are sells.
+
+    Returns [symbol, realized_pnl_usd, matched_qty, proceeds_usd, unmatched_qty]; attrs carry
+    total_realized_pnl_usd.
+    """
+    from collections import deque
+
+    trades = conn.execute(
+        "SELECT symbol, side, amount, price, cost FROM trades ORDER BY ts"
+    ).fetchall()
+    lots: dict[str, deque] = {}
+    realized: dict[str, float] = {}
+    matched: dict[str, float] = {}
+    proceeds: dict[str, float] = {}
+    unmatched: dict[str, float] = {}
+    for symbol, side, amount, price, cost in trades:
+        base = symbol.split("/")[0]
+        if base in STABLECOINS or price is None:
+            continue
+        amt = amount or 0.0
+        if side == "buy":
+            if amt > 0:
+                lots.setdefault(base, deque()).append([amt, float(price)])
+        elif side == "sell":
+            remaining = amt
+            queue = lots.setdefault(base, deque())
+            gain = 0.0
+            while remaining > 1e-12 and queue:
+                lot = queue[0]
+                take = min(lot[0], remaining)
+                gain += (float(price) - lot[1]) * take  # sell price − buy-lot unit cost
+                lot[0] -= take
+                remaining -= take
+                if lot[0] <= 1e-12:
+                    queue.popleft()
+            realized[base] = realized.get(base, 0.0) + gain
+            matched[base] = matched.get(base, 0.0) + (amt - remaining)
+            proceeds[base] = proceeds.get(base, 0.0) + (cost or 0.0)
+            if remaining > 1e-12:
+                unmatched[base] = unmatched.get(base, 0.0) + remaining
+
+    rows = [
+        {
+            "symbol": base,
+            "realized_pnl_usd": realized[base],
+            "matched_qty": matched.get(base, 0.0),
+            "proceeds_usd": proceeds.get(base, 0.0),
+            "unmatched_qty": unmatched.get(base, 0.0),
+        }
+        for base in realized
+    ]
+    df = pd.DataFrame(
+        rows, columns=["symbol", "realized_pnl_usd", "matched_qty", "proceeds_usd", "unmatched_qty"]
+    )
+    df = df.sort_values("realized_pnl_usd").reset_index(drop=True) if not df.empty else df
+    df.attrs["total_realized_pnl_usd"] = float(df["realized_pnl_usd"].sum()) if not df.empty else 0.0
+    return df
+
+
 def _holdings_value_matrix(
     conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame
 ) -> tuple[pd.DataFrame, float]:

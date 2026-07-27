@@ -91,6 +91,27 @@ def build_ingesters(
     return ingesters
 
 
+def notify_ingest_failures(settings: Settings, failed: list[str]) -> bool:
+    """Send a Telegram alert listing the ingesters that failed (D1).
+
+    Reuses the alert sender; dry-run/logged if no bot is configured, so it is testable
+    without a token. Wrapped so a failed alert never crashes the pipeline. Deduped only by
+    the daily cadence (the timer runs once/day). Returns whether a message was delivered.
+    """
+    from alerts.telegram import TelegramSender
+
+    message = (
+        f"🚨 *cryptodash* — fallaron {len(failed)} fuente(s) de ingesta: "
+        f"{', '.join(failed)}. Revisa los logs; posible cambio de estructura en un scraper "
+        "(sección 9) o caída de API."
+    )
+    try:
+        return bool(TelegramSender(settings).send(message))
+    except Exception:  # noqa: BLE001 — the failure alert must never crash the run
+        log.exception("Could not send the ingest-failure Telegram alert.")
+        return False
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments. Returns the parsed namespace."""
     parser = argparse.ArgumentParser(description="cryptodash ingestion pipeline")
@@ -157,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         total = 0
-        failures = 0
+        failed: list[str] = []
         for ingester in build_ingesters(settings, public=args.public):
             name = type(ingester).__name__
             try:
@@ -173,13 +194,17 @@ def main(argv: list[str] | None = None) -> int:
                 if hasattr(ingester, "fetch_capital_flows"):
                     upsert_capital_flows(conn, ingester.fetch_capital_flows())
             except Exception:  # noqa: BLE001 — log, keep going, fail loudly at the end
-                failures += 1
+                failed.append(name)
                 log.exception("Ingester %s failed.", name)
 
         log.info("Ingest complete: %d observations upserted, %d ingester(s) failed.",
-                 total, failures)
+                 total, len(failed))
+        # A parser/scraper breaking (e.g. Farside HTML changing, section 9) is a fail-loud
+        # event you want on your phone, not just in a log (D1).
+        if failed:
+            notify_ingest_failures(settings, failed)
         # Non-zero exit if any ingester failed, so cron/CI surfaces it (section 9).
-        return 1 if failures else 0
+        return 1 if failed else 0
     finally:
         conn.close()
 

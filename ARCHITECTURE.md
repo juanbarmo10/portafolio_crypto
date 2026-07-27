@@ -180,3 +180,9 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
 - **Despliegue** — cron/systemd local escribe datos **públicos** en una Postgres gestionada; la app
   en Streamlit Community Cloud la lee en modo público. La cartera personal nunca sale de la máquina
   local.
+- **Alertas operativas** — si un ingester/scraper falla, la ingesta lo aísla (no aborta el resto),
+  sale con código ≠0 **y** envía un aviso por Telegram con las fuentes caídas. Un parser que se rompe
+  (p. ej. el HTML de Farside cambiando, §4) es justo lo que quieres en el móvil, no solo en el log.
+- **PnL realizado (FIFO)** además del no realizado: cada venta se empareja con los lotes de compra
+  más antiguos (first-in, first-out); una venta sin lote de compra en `trades` queda "sin emparejar"
+  en vez de recibir un coste ficticio.

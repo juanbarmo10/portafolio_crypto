@@ -96,6 +96,11 @@ Incluye hasta ahora:
   ≤7 d) y el drift de asignación (B4): recomienda **ejecutar** (→ tramo más infra-ponderado) o
   **posponer N días** (hasta después de un evento inminente, o mientras el régimen esté risk-off). No
   es un generador de señales: es tu plan escrito hecho concreto (sección 2, nivel 4).
+- **Robustez (Parte D):** **alerta de Telegram cuando un ingester/scraper falla** (el parser de
+  Farside se romperá algún día —sección 9— y ahora te avisa al móvil, no solo al log); **PnL
+  realizado (FIFO)** además del no realizado (empareja cada venta con los lotes de compra más
+  antiguos); **calendario FOMC 2026** cableado (alimenta el strip de eventos, el régimen y el
+  ayudante de aporte). El coste de las comisiones ya se valoraba al precio de su fecha.
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -127,7 +132,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 178) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 181) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

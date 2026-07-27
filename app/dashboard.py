@@ -58,6 +58,7 @@ from transform.indicators import (  # noqa: E402
     macro_table,
     monthly_contribution_advice,
     portfolio_table,
+    realized_pnl_fifo,
     regime_scoreboard,
     rotation_summary,
     stablecoins_summary,
@@ -1520,10 +1521,17 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
     tv = df.attrs.get("total_value_usd", 0.0)
     tc = df.attrs.get("total_cost_usd", 0.0)
     tp = df.attrs.get("total_pnl_usd", 0.0)
-    c1, c2, c3 = st.columns(3)
+    realized = realized_pnl_fifo(conn, settings)
+    rp = realized.attrs.get("total_realized_pnl_usd", 0.0)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Valor (sin efectivo)", _fmt_usd(tv))
     c2.metric("Coste (posiciones con base)", _fmt_usd(tc))
     c3.metric("PnL no realizado", _fmt_signed_usd(tp), delta=f"{tp / tc * 100:+.1f}%" if tc else None)
+    c4.metric(
+        "PnL realizado (FIFO)", _fmt_signed_usd(rp),
+        help="Ganancia/pérdida ya materializada en ventas, emparejando cada venta con los lotes de "
+        "compra más antiguos (FIFO). Bruto de comisiones. Cero si aún no has vendido (D2).",
+    )
 
     exec_sum = execution_summary(conn, settings)
     drag = exec_sum.get("fees_drag_pct") if exec_sum.get("has_trades") else None
@@ -1606,6 +1614,16 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
             f"Sin coste para **{', '.join(missing)}** — añade `cost_basis` en "
             "`config/settings.local.yaml` (ver `.example`) para calcular su PnL."
         )
+    if not realized.empty:
+        parts = [
+            f"{r['symbol']} {_fmt_signed_usd(r['realized_pnl_usd'])}"
+            for r in realized.to_dict("records")
+        ]
+        unmatched = [r["symbol"] for r in realized.to_dict("records") if r["unmatched_qty"] > 1e-9]
+        note = (
+            f" ({', '.join(unmatched)} con ventas sin lote de compra en `trades`)" if unmatched else ""
+        )
+        st.caption("**PnL realizado (FIFO) por activo:** " + " · ".join(parts) + note + ".")
 
     g1, g2 = st.columns(2)
     with g1:

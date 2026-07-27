@@ -31,6 +31,71 @@ from ingest.base import Ingester, retry
 log = get_logger(__name__)
 
 
+def _unix_to_iso_day(unix_ts: int | str) -> str:
+    """Convert a unix seconds timestamp to an ISO8601 UTC date string at midnight."""
+    return datetime.fromtimestamp(int(unix_ts), tz=timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+
+
+def parse_stablecoins_chart(payload: list[dict], history_days: int) -> list[dict]:
+    """Aggregate stablecoin market cap (USD) history -> observation rows (pure, A7).
+
+    Uses ``totalCirculatingUSD.peggedUSD`` — the USD value of USD-pegged stablecoins,
+    a proxy for "dry powder" (capital parked ready to enter crypto). series_id
+    ``stablecoins:total_mcap``. Keeps the most recent ``history_days`` points. Fails
+    loudly (AttributeError) if the top-level shape stops being a list (§9).
+    """
+    rows: list[dict] = []
+    for pt in payload:
+        usd = (pt.get("totalCirculatingUSD") or {}).get("peggedUSD")
+        date = pt.get("date")
+        if usd is None or date is None:
+            continue
+        try:
+            ts = _unix_to_iso_day(date)
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "source": "defillama",
+                "series_id": "stablecoins:total_mcap",
+                "ts": ts,
+                "ts_release": None,
+                "value": float(usd),
+            }
+        )
+    rows.sort(key=lambda r: r["ts"])
+    return rows[-history_days:]
+
+
+def parse_revenue_history(payload: dict, slug: str, history_days: int) -> list[dict]:
+    """Daily protocol **revenue** history -> observation rows (pure, A11).
+
+    Turns the fees-summary ``totalDataChart`` (``[[unix_seconds, revenue_usd], ...]``)
+    into a stored series ``<slug>:revenue`` so value accrual reads as a *trend*, not a
+    snapshot (MC/Revenue over time = crypto P/E). Keeps the most recent ``history_days``.
+    """
+    chart = payload.get("totalDataChart") or []
+    rows: list[dict] = []
+    for point in chart:
+        if not point or len(point) < 2 or point[1] is None:
+            continue
+        try:
+            ts = _unix_to_iso_day(point[0])
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "source": "defillama",
+                "series_id": f"{slug}:revenue",
+                "ts": ts,
+                "ts_release": None,
+                "value": float(point[1]),
+            }
+        )
+    rows.sort(key=lambda r: r["ts"])
+    return rows[-history_days:]
+
+
 class DefiLlamaIngester(Ingester):
     """Fetch historical TVL for every asset with a defillama block in config."""
 
@@ -43,6 +108,8 @@ class DefiLlamaIngester(Ingester):
         self._base_url = cfg["base_url"]
         self._timeout = cfg.get("request_timeout_s", 20)
         self._history_days = int(cfg.get("history_days", 400))
+        self._stablecoins_base_url = cfg.get("stablecoins_base_url", "https://stablecoins.llama.fi")
+        self._revenue_history_days = int(cfg.get("revenue_history_days", 400))
         self._targets = [
             (a["defillama"]["kind"], a["defillama"]["slug"])
             for a in settings.assets
@@ -73,11 +140,13 @@ class DefiLlamaIngester(Ingester):
             if pt.get("tvl") is not None
         ]
 
-    def _fetch_revenue_30d(self, slug: str) -> float | None:
-        """30-day protocol **revenue** (USD to the protocol/token) or None if unavailable.
+    def _fetch_revenue_summary(self, slug: str) -> dict | None:
+        """Full fees/revenue summary for a slug, or None if unavailable (404).
 
-        Revenue (not total fees) is the value-accrual signal: a protocol can have big fees
-        yet ~0 revenue to the token if there is no fee switch (e.g. ONDO). 404 -> None.
+        One request gives both the 30-day snapshot (``total30d``) and the daily history
+        (``totalDataChart``), so A11 (revenue as a series) adds no extra requests over
+        the existing snapshot. Revenue (not total fees) is the value-accrual signal: a
+        protocol can have big fees yet ~0 revenue to the token without a fee switch.
         """
         resp = requests.get(
             f"{self._base_url}/summary/fees/{slug}",
@@ -87,7 +156,15 @@ class DefiLlamaIngester(Ingester):
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        return resp.json().get("total30d")
+        return resp.json()
+
+    def _fetch_stablecoins_mcap(self) -> list[dict]:
+        """Aggregate stablecoin market-cap history rows (A7). Isolated in fetch()."""
+        resp = requests.get(
+            f"{self._stablecoins_base_url}/stablecoincharts/all", timeout=self._timeout
+        )
+        resp.raise_for_status()
+        return parse_stablecoins_chart(resp.json(), self._history_days)
 
     @staticmethod
     def _unix_to_iso(unix_ts: int | str) -> str:
@@ -118,32 +195,47 @@ class DefiLlamaIngester(Ingester):
                 )
             log.info("DefiLlama: %s '%s' -> %d points.", kind, slug, len(history))
 
-        # Protocol revenue snapshot (value accrual to the token). Current date; only
-        # protocol slugs (chains have no /summary/fees entry). Isolated per-slug.
+        # Protocol revenue: 30d snapshot (value accrual to the token) + daily history
+        # (A11). One request per slug gives both. Only protocol slugs (chains have no
+        # /summary/fees entry). Isolated per-slug.
         today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
         for kind, slug in self._targets:
             if kind != "protocol":
                 continue
             try:
-                revenue = retry(
-                    lambda s=slug: self._fetch_revenue_30d(s),
+                summary = retry(
+                    lambda s=slug: self._fetch_revenue_summary(s),
                     exceptions=(requests.RequestException,),
                 )
             except requests.RequestException:
                 log.warning("DefiLlama revenue: %s failed; skipping.", slug)
                 continue
-            if revenue is None:
+            if summary is None:
                 continue
-            rows.append(
-                {
-                    "source": self.source,
-                    "series_id": f"{slug}:revenue_30d",
-                    "ts": today,
-                    "ts_release": None,
-                    "value": revenue,
-                }
-            )
-            log.info("DefiLlama revenue: %s 30d=%.0f", slug, revenue)
+            revenue_30d = summary.get("total30d")
+            if revenue_30d is not None:
+                rows.append(
+                    {
+                        "source": self.source,
+                        "series_id": f"{slug}:revenue_30d",
+                        "ts": today,
+                        "ts_release": None,
+                        "value": revenue_30d,
+                    }
+                )
+            history = parse_revenue_history(summary, slug, self._revenue_history_days)
+            rows.extend(history)
+            log.info("DefiLlama revenue: %s 30d=%s, %d history points.",
+                     slug, revenue_30d, len(history))
+
+        # A7: aggregate stablecoin market cap ("dry powder"). Isolated; a failure here
+        # never sinks the TVL/revenue rows already collected.
+        try:
+            stables = retry(self._fetch_stablecoins_mcap, exceptions=(requests.RequestException,))
+            rows.extend(stables)
+            log.info("DefiLlama stablecoins: %d points.", len(stables))
+        except requests.RequestException:
+            log.warning("DefiLlama stablecoins failed; skipping.")
 
         df = pd.DataFrame(rows, columns=["source", "series_id", "ts", "ts_release", "value"])
         return self.validate(df)

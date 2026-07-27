@@ -114,7 +114,12 @@ class FredIngester(Ingester):
         cfg = settings.source("fred")
         self._timeout = cfg.get("request_timeout_s", 20)
         self._observation_start = cfg.get("observation_start", "2000-01-01")
+        # Headline macro series shown as rows in the macro table, PLUS the liquidity
+        # components (WALCL/TGA/RRP) that only feed the derived net-liquidity series
+        # (A1). Both share the {name: {code, ...}} shape, so we fetch them together;
+        # the macro table reads only `series`, so components never surface as raw rows.
         self._series: dict[str, str] = dict(cfg.get("series", {}))
+        self._series.update(cfg.get("liquidity_components", {}))
 
         api_key = settings.secrets.get("FRED_API_KEY")
         if not api_key:

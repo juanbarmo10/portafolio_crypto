@@ -39,16 +39,24 @@ from core.config import load_settings  # noqa: E402
 from db.loader import init_db  # noqa: E402
 from db.queries import series_history, upcoming_events  # noqa: E402
 from transform.indicators import (  # noqa: E402
+    btc_onchain_summary,
     capital_deployed_summary,
+    coinbase_premium_summary,
     dca_status,
     dca_vs_baseline_table,
+    dvol_summary,
     earn_rewards_summary,
     execution_summary,
+    fear_greed_summary,
+    fed_liquidity_summary,
+    fed_net_liquidity_series,
     holdings_by_group,
     holdings_table,
     liquidations_summary,
     macro_table,
     portfolio_table,
+    rotation_summary,
+    stablecoins_summary,
     thesis_invalidation_table,
     thesis_tvl_table,
     value_accrual_table,
@@ -301,12 +309,65 @@ def _section_macro(conn, settings) -> None:
         "Tabla interactiva: **clic en una fila para ver el historial** del indicador. "
         "Arrastra las cabeceras para reordenar y usa el menú de cada columna para ordenar "
         "u ocultar. `Señal cripto` traduce el movimiento a su efecto en cripto "
-        "(CPI/PCE/NFP/Fed Funds/DXY inversos; curva directa)."
+        "(inflación, empleo, tipos, dólar y condiciones financieras —NFCI, spread HY, real "
+        "yield, VIX— inversos; curva directa)."
     )
     sel = _selected_row(event)
     if sel is not None:
         series_id, label = refs[sel]
         _drilldown_chart(conn, "fred", series_id, label)
+
+    _liquidity_sentiment_block(conn, settings)
+
+
+def _liquidity_sentiment_block(conn, settings) -> None:
+    """Level 1 add-ons: Fed net liquidity (A1), stablecoin dry powder (A7), Fear & Greed (A6).
+
+    Net liquidity is the single macro driver crypto tracks most; stablecoin supply is the
+    "dry powder" waiting to enter; Fear & Greed is a *contrarian weekly* overlay — shown as
+    a quiet caption, never highlighted, by design (sección 2: diseñar contra el over-trading).
+    """
+    liq = fed_liquidity_summary(conn, settings)
+    stab = stablecoins_summary(conn, settings)
+    fng = fear_greed_summary(conn, settings)
+    if not (liq.get("has_data") or stab.get("has_data") or fng.get("has_data")):
+        return
+
+    st.markdown("**Liquidez y sentimiento**")
+    c1, c2 = st.columns(2)
+    if liq.get("has_data"):
+        chg = liq.get("chg_13w_pct")
+        c1.metric(
+            "Liquidez neta de la Fed",
+            f"${liq['latest'] / 1000:,.2f} T",
+            delta=None if chg is None else f"{chg:+.1f}% · 13 sem",
+            help="WALCL − TGA − RRP (FRED, miles de millones→billones USD). El driver macro "
+            "que cripto sigue más de cerca: subiendo = viento de cola risk-on; bajando = "
+            "risk-off. Útil para decidir si ejecutar el aporte mensual (nivel 1).",
+        )
+    if stab.get("has_data"):
+        chg = stab.get("chg_30d_pct")
+        c2.metric(
+            "Stablecoins (dry powder)",
+            _fmt_big_usd(stab["latest"]),
+            delta=None if chg is None else f"{chg:+.1f}% · 30 d",
+            help="Capitalización agregada de stablecoins (DefiLlama). Capital aparcado listo "
+            "para entrar; creciendo = liquidez entrando al ecosistema (combustible, nivel 2).",
+        )
+    if liq.get("has_data"):
+        series = fed_net_liquidity_series(conn, settings)
+        if not series.empty:
+            with st.expander("Ver histórico de liquidez neta"):
+                st.line_chart(series.rename("USD (miles de millones)"))
+
+    if fng.get("has_data"):
+        chg = fng.get("chg_7d")
+        chg_txt = "" if chg is None else f" ({chg:+.0f} vs. 7 d)"
+        st.caption(
+            f"**Fear & Greed:** {fng['value']:.0f}/100 — {fng['label']}{chg_txt}. Sentimiento "
+            "agregado (Alternative.me); úsalo como contexto semanal y **contrarian**, no como "
+            "gatillo de operación (sección 2)."
+        )
 
 
 def _render_btc_dominance(attrs: dict) -> None:
@@ -494,6 +555,60 @@ def _events_strip(conn, settings) -> None:
     )
 
 
+def _rotation_sentiment_block(conn, settings) -> None:
+    """Level 2 add-ons: rotation (A9 ETH/BTC, TOTAL2/3), Coinbase premium (A8), DVOL (A5).
+
+    Rotation answers "¿entorno favorable a altcoins?" (complementa la dominancia BTC);
+    Coinbase premium reads unleveraged US spot conviction; DVOL is the options market's
+    implied volatility ("VIX de cripto"). Weekly context, no intraday (sección 2).
+    """
+    rot = rotation_summary(conn, settings)
+    prem = coinbase_premium_summary(conn, settings)
+    dvol = dvol_summary(conn, settings)
+    if not (rot.get("has_data") or prem.get("has_data") or dvol.get("has_data")):
+        return
+
+    st.markdown("**Rotación y sentimiento de mercado**")
+    if rot.get("has_data"):
+        eb, t2, t3 = rot["eth_btc"], rot["total2"], rot["total3"]
+        c = st.columns(3)
+        c[0].metric(
+            "ETH/BTC",
+            _fmt_ratio(eb["latest"]),
+            delta=None if eb["chg_30d_pct"] is None else f"{eb['chg_30d_pct']:+.1f}% · 30 d",
+            help="Ratio ETH/BTC: barómetro clásico de rotación core→alt. Subiendo = apetito "
+            "por altcoins, entorno favorable a SOL/LINK (sección 2 nivel 2).",
+        )
+        c[1].metric(
+            "TOTAL2 (mcap ex-BTC)",
+            _fmt_big_usd(t2["latest"]),
+            delta=None if t2["chg_30d_pct"] is None else f"{t2['chg_30d_pct']:+.1f}% · 30 d",
+            help="Capitalización total de cripto excluyendo BTC: el ciclo alt sin el ruido de BTC.",
+        )
+        c[2].metric(
+            "TOTAL3 (ex-BTC/ETH)",
+            _fmt_big_usd(t3["latest"]),
+            delta=None if t3["chg_30d_pct"] is None else f"{t3['chg_30d_pct']:+.1f}% · 30 d",
+            help="Total excluyendo BTC y ETH: el resto del mercado altcoin.",
+        )
+
+    bits = [f"{p['asset']} {p['premium_pct']:+.2f}%" for p in prem.get("per_asset", [])]
+    if bits:
+        st.caption(
+            "**Coinbase premium:** " + " · ".join(bits) + ". Positivo = demanda spot US "
+            "(ETF/tesorerías compran en Coinbase); convicción real, no apalancada (nivel 2)."
+        )
+    dbits = []
+    for d in dvol.get("per_currency", []):
+        chg = "" if d["chg_30d"] is None else f" ({d['chg_30d']:+.1f} vs. 30 d)"
+        dbits.append(f"{d['currency']} {d['latest']:.1f}{chg}")
+    if dbits:
+        st.caption(
+            "**DVOL (vol. implícita, 'VIX de cripto'):** " + " · ".join(dbits) + ". Alta = miedo "
+            "(a veces contrarian alcista); baja = complacencia (Deribit, opciones)."
+        )
+
+
 def _section_market_structure(conn, settings) -> None:
     """Level 2 — market structure: ETF flows, rally quality, funding, unlocks."""
     st.header("3 · Estructura de mercado", anchor="estructura")
@@ -525,7 +640,10 @@ def _section_market_structure(conn, settings) -> None:
                 "Activo": r["symbol"],
                 "Estado": _rally_label(r["rally_state"]),
                 "Funding z": _fmt_funding_z(r["funding_z"]),
-                "L/S": _fmt_ratio(r.get("long_short")),
+                "Basis": _fmt_pct(r.get("basis_pct")),
+                "L/S retail": _fmt_ratio(r.get("long_short")),
+                "L/S top": _fmt_ratio(r.get("top_ls_account")),
+                "Taker": _fmt_ratio(r.get("taker_ratio")),
                 "Precio 7d": _fmt_change(r["price_chg"]),
                 "OI 7d": _fmt_change(r["oi_chg"]),
                 "OI 30d": _fmt_change(r["oi_chg_30d"]),
@@ -537,7 +655,7 @@ def _section_market_structure(conn, settings) -> None:
             show.style
             .map(_color_rally, subset=["Estado"])
             .map(_color_funding_z, subset=["Funding z"])
-            .map(_color_by_sign, subset=["Precio 7d", "OI 7d", "OI 30d"])
+            .map(_color_by_sign, subset=["Basis", "Precio 7d", "OI 7d", "OI 30d"])
         )
         st.dataframe(
             styler,
@@ -554,9 +672,21 @@ def _section_market_structure(conn, settings) -> None:
                     help="Z-score del funding sobre 90 días. |z|≥2 (rojo) = posicionamiento "
                     "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
                 ),
-                "L/S": st.column_config.TextColumn(
-                    help="Ratio long/short de cuentas retail (Binance). >1 = mayoría en largos "
-                    "(hacinamiento alcista); <1 = mayoría en cortos. Complementa el funding z."
+                "Basis": st.column_config.TextColumn(
+                    help="Prima perp−spot (%). Positiva y creciente = largos apalancados pagando "
+                    "prima (frágil); negativa = pesimismo/backwardation. Instantánea (perp sin "
+                    "vencimiento; el funding es el carry)."
+                ),
+                "L/S retail": st.column_config.TextColumn(
+                    help="Ratio long/short de cuentas retail (Binance). >1 = mayoría en largos."
+                ),
+                "L/S top": st.column_config.TextColumn(
+                    help="Ratio long/short de las cuentas TOP ('smart money'). La divergencia "
+                    "retail>>top (retail muy largo, top plano/corto) suele marcar techo local."
+                ),
+                "Taker": st.column_config.TextColumn(
+                    help="Ratio de volumen agresor comprador/vendedor. >1 = presión compradora; "
+                    "extremos = agotamiento del flujo."
                 ),
                 "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
                 "OI 30d": st.column_config.TextColumn(
@@ -565,11 +695,14 @@ def _section_market_structure(conn, settings) -> None:
             },
         )
         st.caption(
-            "Clasificación del rally por divergencia precio/OI y funding z-score (sección 2 nivel 2, sección 8). "
-            "Verde/rojo en Precio/OI = dirección; Funding z en rojo = extremo (≥2)."
+            "Rally por divergencia precio/OI + funding z (sección 2 nivel 2, sección 8). "
+            "**Basis** = prima perp−spot (apalancamiento); **L/S retail vs. top** = "
+            "posicionamiento minorista vs. smart money; **Taker** = flujo agresor."
         )
     else:
         st.info("Sin datos de derivados. Ejecuta `python run_ingest.py` (extra `.[markets]`).")
+
+    _rotation_sentiment_block(conn, settings)
 
     liq = liquidations_summary(conn, settings)
     if liq.get("has_liq"):
@@ -675,6 +808,45 @@ def _section_thesis(conn, settings) -> None:
 
     _thesis_invalidation_board(conn, settings)
     _value_accrual_view(conn, settings)
+    _btc_onchain_block(conn, settings)
+
+
+# A10: friendly labels for the Blockchain.com chart slugs.
+_BCOM_CHART_LABELS = {
+    "hash-rate": "Hash rate",
+    "difficulty": "Dificultad",
+    "n-transactions": "Transacciones/día",
+    "n-unique-addresses": "Direcciones activas",
+    "miners-revenue": "Ingresos de mineros",
+}
+
+
+def _btc_onchain_block(conn, settings) -> None:
+    """A10: BTC network fundamentals (hash rate, tx count, active addresses...) — level 3.
+
+    A partial, free substitute for paid on-chain metrics (§4): network security and real
+    usage back BTC's thesis. Not MVRV/SOPR (those stay out of scope).
+    """
+    summary = btc_onchain_summary(conn, settings)
+    if not summary.get("has_data"):
+        return
+    st.markdown("**BTC on-chain (fundamental de red)**")
+    per = summary["per_chart"]
+    cols = st.columns(min(len(per), 5) or 1)
+    for col, item in zip(cols, per):
+        label = _BCOM_CHART_LABELS.get(item["chart"], item["chart"])
+        chg = item.get("chg_30d_pct")
+        col.metric(
+            label,
+            _fmt_big_usd(item["latest"]) if item["latest"] >= 1e6 else _fmt_num(item["latest"]),
+            delta=None if chg is None else f"{chg:+.1f}% · 30 d",
+            delta_color="off",
+        )
+    st.caption(
+        "Fundamentales de red de BTC (Blockchain.com, gratis). Seguridad (hash rate/dificultad) "
+        "y uso real (transacciones/direcciones) sostienen la tesis (nivel 3). Sustituto **parcial** "
+        "de métricas on-chain de pago; no incluye MVRV/SOPR (fuera de alcance, sección 4)."
+    )
 
 
 _INVALIDATION_LABEL = {"red": "🔴 Riesgo", "amber": "🟠 Vigilar", "green": "🟢 OK", "na": "⚪ s/d"}

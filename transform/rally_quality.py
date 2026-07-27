@@ -18,7 +18,7 @@ import pandas as pd
 
 from core.config import Settings
 from db.queries import series_history
-from transform.indicators import pct_change_over_days
+from transform.indicators import pct_change_over_days, relative_premium_pct
 
 # Rally-state labels (price direction x open-interest direction).
 RALLY_CONVICTION = "conviccion"      # price up + OI up   -> new money long
@@ -148,6 +148,7 @@ def market_structure_table(
     cfg = settings.source("derivatives")
     exchanges: list[str] = cfg.get("exchanges", ["binance", "bybit"])
     window: int = int(cfg.get("zscore_window_days", 90))
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
 
     rows: list[dict[str, Any]] = []
     for asset in settings.assets:
@@ -161,7 +162,27 @@ def market_structure_table(
 
         price_chg = pct_change_over_days(close, divergence_days)
         oi_chg = pct_change_over_days(oi, divergence_days)
-        ls = series_history(conn, "derivatives", f"{symbol}:long_short:binance").dropna()
+
+        def _last(kind: str) -> float | None:
+            s = series_history(conn, "derivatives", f"{symbol}:{kind}:binance").dropna()
+            return float(s.iloc[-1]) if not s.empty else None
+
+        # A4 basis (perp premium, %): pair perp close and spot on the SAME date. Both are
+        # stored at day-midnight, so an inner join gives exact same-day pairs; using each
+        # series' independent "latest" could compare across a day and let a full daily move
+        # swamp the small basis signal. Take the most recent common date.
+        cid = id_by_symbol.get(symbol)
+        basis_pct = None
+        if cid is not None and not close.dropna().empty:
+            spot_hist = series_history(conn, "coingecko", f"{cid}:price").dropna()
+            if not spot_hist.empty:
+                pair = pd.concat(
+                    {"perp": close.dropna(), "spot": spot_hist}, axis=1, join="inner"
+                ).dropna()
+                if not pair.empty:
+                    basis_pct = relative_premium_pct(
+                        float(pair["perp"].iloc[-1]), float(pair["spot"].iloc[-1])
+                    )
         rows.append(
             {
                 "symbol": symbol,
@@ -170,7 +191,10 @@ def market_structure_table(
                 "price_chg": price_chg,
                 "oi_chg": oi_chg,
                 "oi_chg_30d": pct_change_over_days(oi, 30),
-                "long_short": float(ls.iloc[-1]) if not ls.empty else None,
+                "long_short": _last("long_short"),          # retail accounts (A3)
+                "top_ls_account": _last("top_ls_account"),   # top accounts / "smart money" (A3)
+                "taker_ratio": _last("taker_ratio"),         # aggressor buy/sell flow (A3)
+                "basis_pct": basis_pct,  # A4
                 "rally_state": rally_state(price_chg, oi_chg),
             }
         )

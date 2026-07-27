@@ -75,6 +75,38 @@ def parse_long_short(records: list[dict], symbol: str) -> list[dict[str, Any]]:
     return rows
 
 
+def parse_futures_ratio(
+    records: list[dict], symbol: str, series_suffix: str, value_key: str
+) -> list[dict[str, Any]]:
+    """Binance futures/data ratio records -> observation rows (pure, generic).
+
+    Covers ``topLongShortAccountRatio`` / ``topLongShortPositionRatio`` (top accounts,
+    a "smart money" proxy — ``value_key='longShortRatio'``) and ``takerlongshortRatio``
+    (aggressor buy/sell volume — ``value_key='buySellRatio'``). The retail-vs-top
+    divergence is the Q2 crowding signal (§2 nivel 2). series_id
+    ``<SYMBOL>:<series_suffix>:binance``.
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        value = rec.get(value_key)
+        ts = rec.get("timestamp")
+        if value is None or ts is None:
+            continue
+        try:
+            rows.append(
+                {
+                    "source": "derivatives",
+                    "series_id": f"{symbol}:{series_suffix}:binance",
+                    "ts": _ms_to_iso_day(int(ts)),
+                    "ts_release": None,
+                    "value": float(value),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return rows
+
+
 class DerivativesIngester(Ingester):
     """Fetch funding-rate and open-interest history for perp markets via ccxt."""
 
@@ -199,6 +231,31 @@ class DerivativesIngester(Ingester):
         )
         return parse_long_short(resp, symbol)
 
+    # A3: top-accounts ratios ("smart money") + taker aggressor flow. Binance-only,
+    # public futures/data. (method, series_suffix, value_key). Implicit ccxt names
+    # verified against the live client.
+    _RATIO_ENDPOINTS = (
+        ("fapiDataGetTopLongShortAccountRatio", "top_ls_account", "longShortRatio"),
+        ("fapiDataGetTopLongShortPositionRatio", "top_ls_position", "longShortRatio"),
+        ("fapiDataGetTakerlongshortRatio", "taker_ratio", "buySellRatio"),
+    )
+
+    def _futures_ratios_rows(self, exchange: ccxt.Exchange, symbol: str) -> list[dict[str, Any]]:
+        """Top-account long/short and taker-ratio rows (Binance public futures/data)."""
+        pair = f"{symbol}{self._quote}"  # e.g. BTCUSDT
+        rows: list[dict[str, Any]] = []
+        for method_name, suffix, value_key in self._RATIO_ENDPOINTS:
+            method = getattr(exchange, method_name, None)
+            if method is None:
+                log.warning("derivatives: %s not on ccxt client; skipping.", method_name)
+                continue
+            resp = retry(
+                lambda m=method: m({"symbol": pair, "period": "1d", "limit": self._ls_days}),
+                exceptions=(ccxt.NetworkError,),
+            )
+            rows.extend(parse_futures_ratio(resp, symbol, suffix, value_key))
+        return rows
+
     def fetch(self) -> pd.DataFrame:
         """Return funding + OI history across exchanges as a long observations DataFrame."""
         rows: list[dict[str, Any]] = []
@@ -234,6 +291,10 @@ class DerivativesIngester(Ingester):
                         rows.extend(self._long_short_rows(exchange, symbol))
                     except Exception:  # noqa: BLE001 — public data endpoint may vary
                         log.exception("derivatives: long/short %s failed", symbol)
+                    try:
+                        rows.extend(self._futures_ratios_rows(exchange, symbol))
+                    except Exception:  # noqa: BLE001 — public data endpoints may vary
+                        log.exception("derivatives: futures ratios %s failed", symbol)
 
             log.info("derivatives: %s done (%d rows so far).", exchange_id, len(rows))
 

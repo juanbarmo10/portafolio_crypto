@@ -42,7 +42,8 @@ pytest && ruff check .
 
 ## Estado
 
-**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridades 1 y 2 listas.**
+**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridades 1 y 2 listas; ampliación
+de fuentes gratuitas (Parte A) integrada.**
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -54,6 +55,17 @@ Incluye hasta ahora:
 - Ingesta multi-fuente: **FRED** (macro con `ts`/`ts_release` point-in-time), **CoinGecko**
   (snapshot + dominancia de mercado total), **DefiLlama** (TVL histórico), **derivados**
   (ccxt: funding, open interest, cierre del perp) y **flujos ETF** (scraper Farside).
+- **Ampliación de fuentes gratuitas (Parte A):** todas sin coste y sin API key nueva.
+  - **Nivel 1 (macro):** **liquidez neta de la Fed** (WALCL − TGA − RRP, FRED — el driver macro
+    que cripto sigue más de cerca), **condiciones financieras** (NFCI, spread HY, real yield 10A,
+    VIX), **stablecoins agregados** (DefiLlama — *dry powder*) y **Fear & Greed** (Alternative.me,
+    como contexto contrarian).
+  - **Nivel 2 (estructura):** **basis perp-spot**, **long/short retail vs. top** y **taker ratio**
+    (Binance `futures/data` público), **premium de Coinbase** (spot Coinbase vs. Binance), **ETH/BTC
+    y TOTAL2/TOTAL3** (rotación) y **DVOL** (vol. implícita de opciones, Deribit — "VIX de cripto").
+  - **Nivel 3 (tesis):** **fundamentales on-chain de BTC** (Blockchain.com: hash rate, dificultad,
+    transacciones, direcciones, ingresos de mineros) y **revenue como serie histórica** (DefiLlama)
+    para un MC/Revenue con tendencia. Todo diario, sin intradía (sección 2).
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -85,9 +97,11 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 150) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 162) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
-  accrual, parsers de ingesta (incl. fixture Farside congelado), holdings y humo de render.
+  accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
+  neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings
+  y humo de render.
 
 ## Requisitos
 

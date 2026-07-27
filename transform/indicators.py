@@ -110,6 +110,23 @@ def mc_tvl_ratio(market_cap: float | None, tvl: float | None) -> float | None:
     return market_cap / tvl
 
 
+def relative_premium_pct(numerator: float | None, base: float | None) -> float | None:
+    """``(numerator / base - 1) * 100`` in percent, or None if inputs are missing/zero.
+
+    The shared primitive for two Q2 signals (IDEAS_MEJORAS A4, A8):
+      * perp-vs-spot **basis** — ``relative_premium_pct(perp_close, spot_price)`` — a
+        thermometer of leverage/optimism (perp trades above spot = leveraged longs paying
+        up; below = pessimism/backwardation).
+      * **Coinbase premium** — ``relative_premium_pct(coinbase_px, binance_px)`` — US spot
+        demand (positive = ETFs/treasuries bidding on Coinbase).
+    Note (§9): for a *perpetual* this is the instantaneous premium, not an annualized
+    dated-future basis — perps have no expiry; funding is the carry mechanism.
+    """
+    if numerator is None or base is None or base == 0:
+        return None
+    return (numerator / base - 1.0) * 100.0
+
+
 def dilution_ratio(circulating: float | None, max_supply: float | None) -> float | None:
     """Circulating / max supply; None if max supply is missing or non-positive.
 
@@ -184,6 +201,52 @@ def macro_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def fed_net_liquidity_series(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+    """Fed **net liquidity** = WALCL − TGA − RRP, in USD billions (level 1, A1).
+
+    The most-followed proxy for how much money is actually available in the system;
+    crypto, a long-duration risk asset, tracks it closely (IDEAS_MEJORAS Parte A). The
+    three FRED components have mixed units and cadences — WALCL/TGA are weekly and in
+    *millions*, RRP is daily and in *billions* — so each is scaled to billions via its
+    configured ``unit_scale`` and aligned **as-of** (union of dates, forward-filled)
+    before subtracting. Returns an ascending, tz-aware Series in USD billions, or an
+    empty Series if any component is missing.
+    """
+    comps = settings.source("fred").get("liquidity_components", {})
+    walcl, tga, rrp = comps.get("walcl"), comps.get("tga"), comps.get("rrp")
+    if not (walcl and tga and rrp):
+        return pd.Series(dtype="float64")
+
+    def _scaled(entry: dict) -> pd.Series:
+        s = series_history(conn, "fred", entry["code"]).dropna()
+        return s * float(entry.get("unit_scale", 1.0))
+
+    frames = {"walcl": _scaled(walcl), "tga": _scaled(tga), "rrp": _scaled(rrp)}
+    if any(f.empty for f in frames.values()):
+        return pd.Series(dtype="float64")
+    # As-of align: union of dates, forward-fill each (weekly series carry between
+    # updates), then drop rows before all three exist. Subtract in billions.
+    df = pd.concat(frames, axis=1).sort_index().ffill().dropna()
+    if df.empty:
+        return pd.Series(dtype="float64")
+    return (df["walcl"] - df["tga"] - df["rrp"]).rename("net_liquidity")
+
+
+def fed_liquidity_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Latest net-liquidity level (USD billions) and 4w/13w % change (level 1, A1)."""
+    s = fed_net_liquidity_series(conn, settings)
+    if s.empty:
+        return {"has_data": False}
+    return {
+        "has_data": True,
+        "latest": float(s.iloc[-1]),
+        "latest_ts": s.index[-1].strftime("%Y-%m-%d"),
+        "chg_4w_pct": pct_change_over_days(s, 28),
+        "chg_13w_pct": pct_change_over_days(s, 91),
+        "unit": settings.source("fred").get("net_liquidity", {}).get("unit", "USD billions"),
+    }
 
 
 def portfolio_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
@@ -1051,3 +1114,162 @@ def liquidations_summary(conn: sqlite3.Connection, settings: Settings) -> dict[s
     if not per_asset:
         return {"has_liq": False}
     return {"has_liq": True, "long_usd": long_usd, "short_usd": short_usd, "per_asset": per_asset}
+
+
+# ---------------------------------------------------------------------------
+# IDEAS_MEJORAS Parte A — rotation, sentiment, liquidity-proxy & on-chain views
+# All read stored observations only (no network). Return dicts the dashboard renders.
+# ---------------------------------------------------------------------------
+
+
+def _asof_frame(series: Mapping[str, pd.Series]) -> pd.DataFrame:
+    """Align named series as-of: union of dates, forward-filled, drop until all exist."""
+    if any(s.dropna().empty for s in series.values()):
+        return pd.DataFrame()
+    df = pd.concat({k: v for k, v in series.items()}, axis=1).sort_index().ffill().dropna()
+    return df
+
+
+def rotation_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """ETH/BTC ratio and TOTAL2/TOTAL3 market caps — rotation / altseason (level 2, A9).
+
+    All from our own stored CoinGecko data: ETH/BTC = classic core→alt rotation barometer;
+    TOTAL2 = total mcap excluding BTC; TOTAL3 = excluding BTC **and** ETH. Complements BTC
+    dominance for "¿entorno favorable a SOL/LINK?" (§2 nivel 2). Each value carries a 30-day
+    change; None until enough history is stored.
+    """
+    btc_px = series_history(conn, "coingecko", "bitcoin:price")
+    eth_px = series_history(conn, "coingecko", "ethereum:price")
+    total = series_history(conn, "coingecko", "global:total_market_cap")
+    btc_mc = series_history(conn, "coingecko", "bitcoin:market_cap")
+    eth_mc = series_history(conn, "coingecko", "ethereum:market_cap")
+
+    ratio = _asof_frame({"n": eth_px, "d": btc_px})
+    eth_btc = (ratio["n"] / ratio["d"]).rename("eth_btc") if not ratio.empty else pd.Series(dtype="float64")
+    if not eth_btc.empty:
+        eth_btc = eth_btc[ratio["d"] != 0]
+
+    t2f = _asof_frame({"total": total, "btc": btc_mc})
+    total2 = (t2f["total"] - t2f["btc"]).rename("total2") if not t2f.empty else pd.Series(dtype="float64")
+    t3f = _asof_frame({"total": total, "btc": btc_mc, "eth": eth_mc})
+    total3 = (
+        (t3f["total"] - t3f["btc"] - t3f["eth"]).rename("total3")
+        if not t3f.empty
+        else pd.Series(dtype="float64")
+    )
+
+    def _pack(s: pd.Series) -> dict[str, Any]:
+        if s.dropna().empty:
+            return {"latest": None, "chg_30d_pct": None}
+        return {"latest": float(s.dropna().iloc[-1]), "chg_30d_pct": pct_change_over_days(s, 30)}
+
+    return {
+        "has_data": not (eth_btc.dropna().empty and total2.dropna().empty),
+        "eth_btc": _pack(eth_btc),
+        "total2": _pack(total2),
+        "total3": _pack(total3),
+    }
+
+
+def coinbase_premium_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Coinbase-vs-Binance spot premium per asset (US spot demand, level 2, A8).
+
+    Aligns the two daily-close series as-of (last common date) and reports
+    ``(coinbase/binance − 1) × 100``. Positive = Coinbase bid richer = US spot demand.
+    """
+    assets = settings.source("spot_prices").get("assets", ["BTC", "ETH"])
+    per: list[dict[str, Any]] = []
+    for sym in assets:
+        cb = series_history(conn, "spot_prices", f"{sym}:spot_close:coinbase")
+        bn = series_history(conn, "spot_prices", f"{sym}:spot_close:binance")
+        df = _asof_frame({"cb": cb, "bn": bn})
+        if df.empty:
+            continue
+        prem = relative_premium_pct(float(df["cb"].iloc[-1]), float(df["bn"].iloc[-1]))
+        if prem is not None:
+            per.append({"asset": sym, "premium_pct": prem, "date": df.index[-1].strftime("%Y-%m-%d")})
+    return {"has_data": bool(per), "per_asset": per}
+
+
+def dvol_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Latest Deribit DVOL (implied-vol index, "crypto VIX") per currency + 30d change (A5)."""
+    per: list[dict[str, Any]] = []
+    for cur in settings.source("deribit").get("currencies", ["BTC", "ETH"]):
+        hist = series_history(conn, "deribit", f"deribit:dvol:{cur.lower()}").dropna()
+        if hist.empty:
+            continue
+        per.append(
+            {
+                "currency": cur,
+                "latest": float(hist.iloc[-1]),
+                "chg_30d": abs_change_over_days(hist, 30),
+                "date": hist.index[-1].strftime("%Y-%m-%d"),
+            }
+        )
+    return {"has_data": bool(per), "per_currency": per}
+
+
+# Fear & Greed classification buckets (0-100), matching Alternative.me.
+def _fear_greed_label(value: float) -> str:
+    if value <= 24:
+        return "Miedo extremo"
+    if value <= 44:
+        return "Miedo"
+    if value <= 55:
+        return "Neutral"
+    if value <= 74:
+        return "Codicia"
+    return "Codicia extrema"
+
+
+def fear_greed_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Latest Fear & Greed value (+ classification) and 7-day change (level 1/2, A6)."""
+    hist = series_history(conn, "alternative_me", "sentiment:fear_greed").dropna()
+    if hist.empty:
+        return {"has_data": False}
+    value = float(hist.iloc[-1])
+    return {
+        "has_data": True,
+        "value": value,
+        "label": _fear_greed_label(value),
+        "chg_7d": abs_change_over_days(hist, 7),
+        "date": hist.index[-1].strftime("%Y-%m-%d"),
+    }
+
+
+def stablecoins_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Aggregate stablecoin market cap ("dry powder") — latest + 30d change (level 2, A7).
+
+    Growing supply = liquidity entering the ecosystem (fuel); shrinking = capital leaving.
+    """
+    hist = series_history(conn, "defillama", "stablecoins:total_mcap").dropna()
+    if hist.empty:
+        return {"has_data": False}
+    return {
+        "has_data": True,
+        "latest": float(hist.iloc[-1]),
+        "chg_30d_pct": pct_change_over_days(hist, 30),
+        "date": hist.index[-1].strftime("%Y-%m-%d"),
+    }
+
+
+def btc_onchain_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Latest value + 30d % change per configured BTC on-chain chart (level 3, A10).
+
+    Network fundamentals (hash rate, difficulty, tx count, active addresses, miners'
+    revenue) as a partial free substitute for paid on-chain metrics (§4). Not MVRV/SOPR.
+    """
+    charts = settings.source("blockchain_com").get("charts", [])
+    per: list[dict[str, Any]] = []
+    for chart in charts:
+        hist = series_history(conn, "blockchain_com", f"btc:{chart}").dropna()
+        if hist.empty:
+            continue
+        per.append(
+            {
+                "chart": chart,
+                "latest": float(hist.iloc[-1]),
+                "chg_30d_pct": pct_change_over_days(hist, 30),
+            }
+        )
+    return {"has_data": bool(per), "per_chart": per}

@@ -32,12 +32,16 @@ from db.loader import (
 )
 from ingest.base import Ingester
 from ingest.binance_account import BinanceAccountIngester
+from ingest.blockchain_com import BlockchainComIngester
 from ingest.coingecko import CoinGeckoIngester
 from ingest.defillama import DefiLlamaIngester
+from ingest.deribit import DeribitIngester
 from ingest.derivatives import DerivativesIngester
 from ingest.etf_flows import EtfFlowsIngester
 from ingest.fred import FredIngester
 from ingest.fred_releases import FredReleasesIngester
+from ingest.sentiment import FearGreedIngester
+from ingest.spot_prices import SpotPricesIngester
 
 log = get_logger(__name__)
 
@@ -55,11 +59,17 @@ def build_ingesters(
             shared/cloud database (e.g. Neon feeding a public dashboard) never receives
             your real holdings/trades. Public market data only.
     """
+    # All of these are FREE, keyless public market data (IDEAS_MEJORAS Parte A), so they
+    # run in both private and public/cloud modes.
     ingesters: list[Ingester] = [
         CoinGeckoIngester(settings),
-        DefiLlamaIngester(settings),
-        DerivativesIngester(settings),
+        DefiLlamaIngester(settings),      # + A7 stablecoins, A11 revenue history
+        DerivativesIngester(settings),    # + A3 top L/S + taker ratio
         EtfFlowsIngester(settings),
+        DeribitIngester(settings),        # A5 DVOL
+        FearGreedIngester(settings),      # A6 Fear & Greed
+        SpotPricesIngester(settings),     # A8 Coinbase premium inputs
+        BlockchainComIngester(settings),  # A10 BTC on-chain
     ]
     try:
         ingesters.append(FredIngester(settings))

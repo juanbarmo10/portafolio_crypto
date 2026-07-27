@@ -91,11 +91,24 @@ def test_defillama_parses_protocol_and_chain(monkeypatch) -> None:
         {"date": 1_700_086_400, "tvl": 520.0},
     ]
 
+    # Protocol fees/revenue summary: 30d snapshot + daily history (A11).
+    revenue_payload = {
+        "total30d": 3000.0,
+        "totalDataChart": [[1_700_000_000, 90.0], [1_700_086_400, 100.0]],
+    }
+    # A7 aggregate stablecoins (different host).
+    stables_payload = [
+        {"date": "1700000000", "totalCirculatingUSD": {"peggedUSD": 150e9}},
+        {"date": "1700086400", "totalCirculatingUSD": {"peggedUSD": 151e9}},
+    ]
+
     def fake_get(url, **kwargs):
+        if "stablecoincharts" in url:
+            return _FakeResponse(stables_payload)
         if "/historicalChainTvl/" in url:
             return _FakeResponse(chain_payload)
         if "/summary/fees/" in url:
-            return _FakeResponse({"total30d": 3000.0})  # protocol revenue snapshot
+            return _FakeResponse(revenue_payload)  # protocol revenue snapshot + history
         return _FakeResponse(protocol_payload)
 
     monkeypatch.setattr(dl_mod.requests, "get", fake_get)
@@ -114,6 +127,12 @@ def test_defillama_parses_protocol_and_chain(monkeypatch) -> None:
     aave_rev = df[df["series_id"] == "aave:revenue_30d"]
     assert len(aave_rev) == 1 and set(aave_rev["value"]) == {3000.0}
     assert df[df["series_id"] == "Sui:revenue_30d"].empty  # chains have no fees entry
+    # A11: revenue daily history is stored per protocol slug.
+    aave_rev_hist = df[df["series_id"] == "aave:revenue"]
+    assert len(aave_rev_hist) == 2 and set(aave_rev_hist["value"]) == {90.0, 100.0}
+    # A7: aggregate stablecoin market cap.
+    stables = df[df["series_id"] == "stablecoins:total_mcap"]
+    assert len(stables) == 2 and 151e9 in set(stables["value"])
     load_settings.cache_clear()
 
 

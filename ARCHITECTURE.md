@@ -34,6 +34,10 @@ flowchart LR
         DL[DefiLlama]
         DER[Binance/Bybit ccxt]
         ETF[Farside scraper]
+        DVOL[Deribit DVOL]
+        FNG[Alternative.me F&G]
+        BCOM[Blockchain.com]
+        SPOT[Coinbase/Binance spot]
     end
     Fuentes --> ING[ingest/ · fetch parsers puros]
     ING --> LOADER[db/loader · upsert idempotente]
@@ -113,6 +117,17 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
   sostenidas para BTC/ETH, caída de TVL, dilución, unlock próximo). Es **honesto** sobre lo que no
   puede medir: las invalidaciones cualitativas (demanda de token, riesgo regulatorio) se marcan como
   no medibles en vez de fingir un estado verde.
+- **Liquidez neta de la Fed** — `WALCL − TGA − RRP`. Los tres componentes de FRED tienen **unidades
+  y cadencias distintas** (WALCL/TGA semanales en *millones*, RRP diaria en *miles de millones*): se
+  normalizan a miles de millones con un `unit_scale` por serie (verificado contra la metadata de FRED)
+  y se alinean *as-of* (unión de fechas, *forward-fill*) antes de restar. La resta con unidades sin
+  normalizar es un error silencioso clásico; por eso el escalado vive en config y está testeado.
+- **Basis y premium** — `(a/base − 1)·100`: **basis** perp−spot (apalancamiento/optimismo; para un
+  perp es la prima instantánea, no un basis anualizado con vencimiento) y **premium de Coinbase**
+  (Coinbase vs. Binance = demanda spot US). Ambos emparejan las dos series en la **misma fecha**
+  (*inner join*) para que un desfase de un día no contamine una señal pequeña.
+- **Rotación** — ETH/BTC y TOTAL2/TOTAL3 (mcap total menos BTC, y menos BTC y ETH) desde datos
+  propios; complementan la dominancia BTC para "¿entorno favorable a altcoins?".
 
 ## 6. Trampas del dominio que el diseño evita
 

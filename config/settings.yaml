@@ -33,6 +33,13 @@ sources:
     request_timeout_s: 20
     # Keep this many days of historical TVL per protocol/chain (enough for 7/30/90d).
     history_days: 400
+    # A7: agregado de stablecoins (host distinto, sin key). "Dry powder" = capital
+    # aparcado listo para entrar a cripto (IDEAS_MEJORAS Parte A). series_id
+    # `stablecoins:total_mcap`.
+    stablecoins_base_url: "https://stablecoins.llama.fi"
+    # A11: guardar la SERIE histórica de revenue por protocolo (no solo el snapshot 30d)
+    # -> value-accrual como tendencia y MC/Revenue histórico. series_id `<slug>:revenue`.
+    revenue_history_days: 400
   derivatives:
     # ccxt perpetual-swap data (Phase 2). Public endpoints, no key.
     exchanges: ["binance", "bybit"]
@@ -40,6 +47,10 @@ sources:
     funding_history_days: 90      # funding is 8h; ~270 points -> z-score window
     oi_history_days: 30           # Binance OI-history endpoint caps ~30 days
     zscore_window_days: 90        # funding z-score window (§8, §2 nivel 2)
+    # A3: Binance futures/data públicos (sin key). long_short = cuentas retail;
+    # top_ls_* = cuentas top ("smart money"); taker_ratio = flujo agresor. Solo 1d
+    # (disciplina anti-intradía). La divergencia retail vs. top es la señal jugosa.
+    long_short_days: 30
     request_timeout_ms: 20000
   etf_flows:
     # Farside scraper (Phase 2). Fragile by design (§9): frozen HTML fixture + fail
@@ -74,6 +85,34 @@ sources:
     # must NOT live in this tracked/public file. Put it in the gitignored
     # `config/settings.local.yaml` (template: `config/settings.local.yaml.example`), which
     # is deep-merged over this file at load time.
+  # A5: Deribit (opciones) — API pública sin key. DVOL = "VIX de cripto" (vol implícita).
+  # Snapshot diario, disciplina anti-intradía (IDEAS_MEJORAS Parte A, sección 2).
+  deribit:
+    base_url: "https://www.deribit.com/api/v2"
+    currencies: ["BTC", "ETH"]
+    dvol_history_days: 90
+    request_timeout_s: 20
+  # A6: Fear & Greed (Alternative.me) — gratis, sin key, histórico diario. Sentimiento
+  # agregado; usar contrarian y como contexto SEMANAL, no destacado (sección 2).
+  fear_greed:
+    base_url: "https://api.alternative.me/fng/"
+    history_days: 120
+    request_timeout_s: 20
+  # A8: precios spot multi-exchange (vía ccxt, sin key) para el "Coinbase premium" =
+  # demanda US spot institucional. Solo BTC/ETH, cierre diario (sección 2).
+  spot_prices:
+    exchanges: ["coinbase", "binance"]
+    assets: ["BTC", "ETH"]
+    quotes: {coinbase: "USD", binance: "USDT"}
+    history_days: 30
+    request_timeout_ms: 20000
+  # A10: fundamental on-chain de BTC (Blockchain.com charts) — gratis, sin key.
+  # Sustituto PARCIAL de métricas on-chain de pago (no MVRV/SOPR). series_id `btc:<chart>`.
+  blockchain_com:
+    base_url: "https://api.blockchain.info/charts"
+    charts: ["hash-rate", "difficulty", "n-transactions", "n-unique-addresses", "miners-revenue"]
+    timespan: "1year"
+    request_timeout_s: 25
   fred:
     # API key comes from FRED_API_KEY env var, never stored here.
     request_timeout_s: 20
@@ -128,6 +167,52 @@ sources:
         # Simplificación: empinándose/normalizando (subiendo) = sesgo risk-on; profundizar la
         # inversión (bajando) = señal recesiva. Ajustable si prefieres otra lectura.
         crypto_effect: direct
+      # --- A2: condiciones financieras / crédito (IDEAS_MEJORAS Parte A) -------
+      # Capturan "apetito por riesgo" mejor que el CPI aislado y lideran el risk-off
+      # de cripto. Todas gratis por el mismo pipeline FRED.
+      nfci:
+        code: "NFCI"
+        label: "NFCI"
+        description: "Índice de condiciones financieras (Chicago Fed). >0 = condiciones restrictivas."
+        crypto_effect: inverse   # condiciones restrictivas → risk-off → bajista
+      hy_spread:
+        code: "BAMLH0A0HYM2"
+        label: "Spread HY"
+        description: "Spread de crédito high yield (OAS, %). Ensanchándose = estrés/risk-off."
+        crypto_effect: inverse   # spread ↑ = estrés de crédito → bajista para cripto
+      real_yield_10y:
+        code: "DFII10"
+        label: "Real yield 10A"
+        description: "Rendimiento real a 10 años (TIPS, %). Real yield ↑ = viento en contra para BTC 'oro digital'."
+        crypto_effect: inverse   # rendimiento real ↑ → bajista para activos sin flujo
+      vix:
+        code: "VIXCLS"
+        label: "VIX"
+        description: "Volatilidad implícita del S&P 500. VIX ↑ = miedo cross-asset → risk-off."
+        crypto_effect: inverse   # VIX ↑ = miedo → bajista para cripto
+    # --- A1: liquidez neta de la Fed (IDEAS_MEJORAS Parte A) ------------------
+    # Componentes que NO se muestran como filas macro sueltas: solo alimentan la serie
+    # derivada `net_liquidity` (transform.indicators.fed_net_liquidity_series). El
+    # ingester FRED las descarga igual que `series`. UNIDADES VERIFICADAS EN VIVO contra
+    # el endpoint fred/series (2026-07-26): WALCL y WTREGEN en MILLONES; RRPONTSYD en
+    # MILES DE MILLONES. `unit_scale` normaliza todo a MILES DE MILLONES de USD.
+    liquidity_components:
+      walcl:
+        code: "WALCL"
+        label: "Balance de la Fed (WALCL)"
+        unit_scale: 0.001        # millones -> miles de millones
+      tga:
+        code: "WTREGEN"
+        label: "Cuenta General del Tesoro (TGA)"
+        unit_scale: 0.001        # millones -> miles de millones
+      rrp:
+        code: "RRPONTSYD"
+        label: "Repos inversos overnight (ON RRP)"
+        unit_scale: 1.0          # ya en miles de millones
+    net_liquidity:
+      # net = WALCL - TGA - RRP (todo en miles de millones tras unit_scale).
+      unit: "USD (miles de millones)"
+      crypto_effect: direct      # liquidez neta ↑ = viento de cola risk-on → alcista
 
 # --- Tracked asset universe (CLAUDE.md section 5) ----------------------------
 # tier: nucleo | satelite | riesgo_medio | riesgo_alto | observacion

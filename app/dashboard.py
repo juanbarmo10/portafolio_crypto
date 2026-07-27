@@ -56,6 +56,7 @@ from transform.indicators import (  # noqa: E402
     holdings_table,
     liquidations_summary,
     macro_table,
+    monthly_contribution_advice,
     portfolio_table,
     regime_scoreboard,
     rotation_summary,
@@ -1248,6 +1249,9 @@ def _section_execution(conn, settings) -> None:
     # --- Scorecard conductual (B6) -------------------------------------------
     _scorecard_view(conn, settings)
 
+    # --- ¿Despliego el aporte de este mes? (B7) ------------------------------
+    _contribution_advice_view(conn, settings, holdings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -1409,6 +1413,43 @@ def _risk_view(conn, settings, holdings) -> None:
         f"Riesgo sobre precios propios (backfill); ventana de {summary['window_days']} d. "
         "Diversificación **real** = por modo de fallo, no por número de tickers (sección 5)."
     )
+
+
+_REGIME_ICON = {"risk_on": "🟢 risk-on", "neutral": "🟠 neutral", "risk_off": "🔴 risk-off"}
+
+
+def _contribution_advice_view(conn, settings, holdings) -> None:
+    """B7: '¿despliego el aporte de este mes?' — compone régimen + eventos + drift (§2 Q4, level 4)."""
+    a = monthly_contribution_advice(conn, settings, holdings=holdings)
+    if not a.get("has_data"):
+        return
+    st.subheader("¿Despliego el aporte de este mes?")
+    minimum = _fmt_usd(a["minimum_usd"]) if a.get("minimum_usd") else "el aporte"
+    if a["recommendation"] == "execute":
+        tier = a.get("target_tier_label")
+        dest = f" → tramo **{tier}** (el más infra-ponderado)" if tier else ""
+        st.success(
+            f"✅ **Ejecutar** el aporte (mín. {minimum}){dest}. Rebalancea **añadiendo** al tramo "
+            "bajo. No es una señal de compra: es tu plan escrito (sección 2, nivel 4)."
+        )
+    else:
+        n = a.get("postpone_days")
+        when = f" ~{n} día(s)" if n else " hasta que mejore el régimen"
+        reasons = ("Motivos: " + "; ".join(a["reasons"]) + ".") if a.get("reasons") else ""
+        st.warning(f"⏸️ **Posponer**{when}. {reasons}")
+
+    ctx = []
+    if a.get("regime_label"):
+        ctx.append(f"régimen {_REGIME_ICON.get(a['regime_label'], a['regime_label'])} (score {a['regime_score']:+d})")
+    if a.get("blocking_events"):
+        ctx.append(f"{len(a['blocking_events'])} evento(s) de alto impacto ≤{7} d")
+    if a.get("target_tier_label"):
+        ctx.append(f"tramo objetivo: {a['target_tier_label']}")
+    if ctx:
+        st.caption(
+            " · ".join(ctx) + ". Compone el semáforo de régimen (niveles 1-2), el calendario de "
+            "eventos y el drift de asignación (nivel 4) en una sola decisión mensual."
+        )
 
 
 def _scorecard_view(conn, settings) -> None:

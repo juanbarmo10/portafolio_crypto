@@ -155,6 +155,11 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
   test directo de "¿mi selección/timing batió a solo mantener BTC?". Es el widget que **valida la
   tesis anti-over-trading** del proyecto. Honesto: usa solo operaciones (ambos lados), y excluye de
   la comparación las anteriores a la ventana de 365 días gratis de precios (contándolas).
+- **Ayudante de aporte mensual** — no calcula nada nuevo: **compone** el semáforo de régimen, el
+  calendario de eventos (releases macro/FOMC ≤7 d) y el drift de asignación en **una decisión
+  mensual**: ejecutar (→ tramo más infra-ponderado) o posponer N días (hasta después de un evento
+  inminente, o mientras el régimen esté risk-off). Operacionaliza el nivel 4 del checklist — el plan
+  escrito hecho concreto — con cadencia mensual por diseño, nunca un gatillo.
 
 ## 6. Trampas del dominio que el diseño evita
 

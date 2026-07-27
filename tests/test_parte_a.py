@@ -23,13 +23,20 @@ import pandas as pd
 import pytest
 
 from core.config import load_settings
-from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations, upsert_trades
+from db.loader import (
+    OBSERVATION_COLUMNS,
+    init_db,
+    upsert_events,
+    upsert_observations,
+    upsert_trades,
+)
 from transform.indicators import (
     _vote,
     behavioral_scorecard,
     coinbase_premium_summary,
     drift_vs_target,
     fed_net_liquidity_series,
+    monthly_contribution_advice,
     regime_scoreboard,
     relative_premium_pct,
     rotation_summary,
@@ -386,6 +393,49 @@ def test_behavioral_scorecard_edge_vs_hold_btc(conn, settings) -> None:
     assert s["bh_btc_ret_pct"] == pytest.approx(0.0)     # 0.04 BTC, BTC flat
     assert s["edge_vs_hold_btc_pp"] == pytest.approx(50.0) and s["bh_uncovered"] == 0
     assert s["fees_drag_pct"] == pytest.approx(0.1)      # $2 / $2000
+
+
+def test_advice_execute_and_target_tier(conn, settings) -> None:
+    """B7: no risk-off régimen and no events -> execute, routed to the most-underweight tramo."""
+    holdings = pd.DataFrame(
+        [
+            {"asset": "BTC", "value_usd": 900.0, "is_cash": False},  # núcleo, overweight
+            {"asset": "SOL", "value_usd": 100.0, "is_cash": False},  # riesgo_medio
+        ]
+    )
+    a = monthly_contribution_advice(conn, settings, holdings=holdings)
+    assert a["recommendation"] == "execute"           # empty DB -> régimen n/a, no events
+    assert a["target_tier"] == "riesgo_alto"           # 0% held, target 15 -> most underweight
+    assert not a["blocking_events"]
+
+
+def test_advice_postpone_on_risk_off(conn, settings) -> None:
+    """B7: a risk-off régimen postpones (§2 hard rule)."""
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [_obs("NFCI", _day(8), 0.50, "fred")]
+            + [_obs("etf:btc:total", _day(d), -50.0, "farside") for d in (6, 7, 8)]
+        ),
+    )
+    a = monthly_contribution_advice(conn, settings)
+    assert a["recommendation"] == "postpone" and a["regime_label"] == "risk_off"
+    assert any("risk-off" in r for r in a["reasons"])
+
+
+def test_advice_postpone_on_event(conn, settings) -> None:
+    """B7: an imminent high-impact macro event postpones until after it."""
+    upsert_events(
+        conn,
+        pd.DataFrame(
+            [{"event_id": "cpi-x", "category": "macro", "ts": _in_days(3) + "T00:00:00+00:00",
+              "label": "CPI", "payload": None}]
+        ),
+    )
+    a = monthly_contribution_advice(conn, settings)
+    assert a["recommendation"] == "postpone"
+    assert a["postpone_days"] == 4  # 3 days out -> wait until after (3 + 1)
+    assert a["blocking_events"] and a["blocking_events"][0]["label"] == "CPI"
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

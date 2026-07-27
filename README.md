@@ -43,7 +43,8 @@ pytest && ruff check .
 ## Estado
 
 **Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridades 1 y 2 listas; ampliación
-de fuentes gratuitas (Parte A) integrada.**
+de fuentes gratuitas (Parte A) y capa de análisis avanzado (Parte B: semáforo de régimen, drift,
+riesgo de cartera, scorecard conductual y ayudante de aporte mensual) integradas.**
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -90,6 +91,11 @@ Incluye hasta ahora:
   % del capital) y el edge de *timing* vs. DCA ciego. Es el widget que pone a prueba la tesis
   anti-over-trading del proyecto (sección 2). Honesto sobre cobertura: las operaciones anteriores a
   la ventana de 365 días de CoinGecko gratis quedan fuera de la comparación (y se dice cuántas).
+- **Ayudante de aporte mensual (Parte B, B7):** *¿despliego el aporte de este mes?* Una sola decisión
+  mensual que **compone** el semáforo de régimen (B1), el calendario de eventos (releases macro/FOMC
+  ≤7 d) y el drift de asignación (B4): recomienda **ejecutar** (→ tramo más infra-ponderado) o
+  **posponer N días** (hasta después de un evento inminente, o mientras el régimen esté risk-off). No
+  es un generador de señales: es tu plan escrito hecho concreto (sección 2, nivel 4).
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -121,7 +127,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 175) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 178) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

@@ -24,7 +24,7 @@ from typing import Any
 import pandas as pd
 
 from core.config import Settings
-from db.queries import latest_by_source, latest_observation, series_history
+from db.queries import latest_by_source, latest_observation, series_history, upcoming_events
 
 # ---------------------------------------------------------------------------
 # Pure numeric helpers
@@ -1610,3 +1610,75 @@ def drift_vs_target(
     most = str(cand.sort_values("drift_pp").iloc[0]["tier"]) if not cand.empty else None
     df.attrs.update(invested_usd=float(invested), cash_usd=cash, most_underweight=most)
     return df
+
+
+def monthly_contribution_advice(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    within_days: int = 7,
+    holdings: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """B7: "should I deploy this month's contribution?" — one monthly, actionable decision.
+
+    **Not a signal generator** — it composes what the panel already computes into your *written
+    plan made concrete* (§2 Q4): the **régimen** semáforo (B1), the **events** strip (macro
+    releases / FOMC within ``within_days``) and the **drift** most-underweight tramo (B4). It
+    recommends **execute now** / **postpone** (until after an imminent high-impact event, or while
+    the régimen is risk-off) and **where** (the most under-weighted tramo — rebalance by adding).
+    Monthly cadence by design; reinforces discipline, never a buy trigger.
+
+    Returns ``{has_data, minimum_usd, regime_label, regime_score, recommendation
+    ('execute'|'postpone'), reasons, postpone_days, blocking_events, target_tier,
+    target_tier_label}``.
+    """
+    minimum = settings.raw.get("dca", {}).get("monthly_contribution_min_usd")
+    regime = regime_scoreboard(conn, settings)
+
+    # Imminent high-impact events: macro releases (events table) + FOMC (manual config).
+    blocking: list[dict[str, Any]] = [
+        {"label": e["label"], "date": e["date"], "days": e["days_until"]}
+        for e in upcoming_events(conn, within_days=within_days, categories=("macro",))
+    ]
+    today = datetime.now(timezone.utc).date()
+    for raw in settings.raw.get("macro_calendar", {}).get("fomc_dates", []) or []:
+        try:
+            days = (datetime.strptime(str(raw), "%Y-%m-%d").date() - today).days
+        except ValueError:
+            continue
+        if 0 <= days <= within_days:
+            blocking.append({"label": "FOMC", "date": str(raw), "days": days})
+    blocking.sort(key=lambda b: b["days"])
+
+    drift = drift_vs_target(conn, settings, holdings)
+    target_tier = drift.attrs.get("most_underweight") if not drift.empty else None
+    target_label = None
+    if target_tier and not drift.empty:
+        match = drift.loc[drift["tier"] == target_tier, "tier_label"]
+        target_label = str(match.iloc[0]) if not match.empty else target_tier
+
+    reasons: list[str] = []
+    postpone = False
+    if regime.get("has_data") and regime["label"] == "risk_off":
+        postpone = True
+        reasons.append(f"régimen risk-off (score {regime['score']:+d}): niveles 1-2 en rojo (§2)")
+    if blocking:
+        postpone = True
+        ev = ", ".join(f"{b['label']} {b['date']} (en {b['days']} d)" for b in blocking)
+        reasons.append(f"evento(s) de alto impacto inminente(s): {ev}")
+
+    # Event-based postpone has a concrete horizon (wait until after the last one); a régimen-only
+    # postpone is open-ended (wait for it to improve) -> None.
+    postpone_days = (blocking[-1]["days"] + 1) if blocking else None
+
+    return {
+        "has_data": True,
+        "minimum_usd": minimum,
+        "regime_label": regime.get("label") if regime.get("has_data") else None,
+        "regime_score": regime.get("score") if regime.get("has_data") else None,
+        "recommendation": "postpone" if postpone else "execute",
+        "reasons": reasons,
+        "postpone_days": postpone_days,
+        "blocking_events": blocking,
+        "target_tier": target_tier,
+        "target_tier_label": target_label,
+    }

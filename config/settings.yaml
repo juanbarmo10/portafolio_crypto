@@ -323,6 +323,21 @@ indicators:
   funding_zscore_low: -2.0    # crowded shorts, squeeze conditions
   tvl_drop_pct_7d_alert: 20.0 # possible thesis invalidation
   etf_flow_streak_days: 3     # consecutive negative days => alert
+  # --- B1: semáforo de régimen (IDEAS_MEJORAS Parte B) -----------------------
+  # Score compuesto y TRANSPARENTE de nivel 1+2. Cada señal vota +1 risk-on / 0
+  # neutral / -1 risk-off; el total se clasifica con los umbrales de abajo. Pocos
+  # componentes, pesos iguales fijos y dead-zones documentadas (anti-overfitting,
+  # sección 9): NO se optimizan pesos sobre el histórico.
+  regime:
+    net_liquidity_dead_pct: 0.5   # |cambio 13 sem de liquidez neta| por debajo = neutral
+    nfci_dead: 0.05               # |nivel NFCI| por debajo = neutral (>0 restrictivo = risk-off)
+    hy_dead_pp: 0.10              # |cambio 4 sem del spread HY, pp| por debajo = neutral
+    dxy_dead_pct: 0.5             # |cambio 4 sem de DXY, %| por debajo = neutral
+    stablecoins_dead_pct: 0.5     # |cambio 30 d de stablecoins, %| por debajo = neutral
+    funding_z_extreme: 2.0        # |z| por encima = voto de hacinamiento (froth/lavado)
+    etf_streak_min: 2             # días de racha ETF para contar el voto
+    risk_on_at: 2                 # score >= => risk-on
+    risk_off_at: -2               # score <= => risk-off
 
 # --- Recurring monthly contribution (CLAUDE.md sections 1, 2 level 4) ---------
 dca:

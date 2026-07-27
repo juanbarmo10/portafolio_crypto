@@ -228,7 +228,7 @@ def fed_net_liquidity_series(conn: sqlite3.Connection, settings: Settings) -> pd
         return pd.Series(dtype="float64")
     # As-of align: union of dates, forward-fill each (weekly series carry between
     # updates), then drop rows before all three exist. Subtract in billions.
-    df = pd.concat(frames, axis=1).sort_index().ffill().dropna()
+    df = pd.concat(frames, axis=1, sort=False).sort_index().ffill().dropna()
     if df.empty:
         return pd.Series(dtype="float64")
     return (df["walcl"] - df["tga"] - df["rrp"]).rename("net_liquidity")
@@ -1126,7 +1126,9 @@ def _asof_frame(series: Mapping[str, pd.Series]) -> pd.DataFrame:
     """Align named series as-of: union of dates, forward-filled, drop until all exist."""
     if any(s.dropna().empty for s in series.values()):
         return pd.DataFrame()
-    df = pd.concat({k: v for k, v in series.items()}, axis=1).sort_index().ffill().dropna()
+    # sort=False: we sort the index explicitly below; avoids the pandas-4 implicit-sort
+    # deprecation on concatenated DatetimeIndex.
+    df = pd.concat(dict(series), axis=1, sort=False).sort_index().ffill().dropna()
     return df
 
 
@@ -1273,3 +1275,126 @@ def btc_onchain_summary(conn: sqlite3.Connection, settings: Settings) -> dict[st
             }
         )
     return {"has_data": bool(per), "per_chart": per}
+
+
+# ---------------------------------------------------------------------------
+# IDEAS_MEJORAS Parte B — B1: regime scoreboard (the "marcador rector")
+# ---------------------------------------------------------------------------
+
+
+def _vote(value: float, low: float, high: float, direction: int = 1) -> int:
+    """Vote +/-1/0 for a reading against a dead-zone [low, high]. direction=1: above high
+    is risk-on (+1), below low risk-off (-1); direction=-1 inverts (a rise is risk-off)."""
+    if value > high:
+        return 1 * direction
+    if value < low:
+        return -1 * direction
+    return 0
+
+
+def regime_scoreboard(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """B1: transparent risk-on / neutral / risk-off regime score (levels 1+2).
+
+    Aggregates a **small, fixed** set of level-1/2 signals — Fed net liquidity, NFCI, HY
+    spread, DXY, BTC ETF-flow streak, stablecoin supply, BTC funding z — into one score.
+    Each signal votes ``+1`` risk-on / ``0`` neutral / ``-1`` risk-off through a documented
+    dead-zone (``indicators.regime`` in config); the score is their **equal-weighted sum**
+    and is classified with fixed thresholds. This is the operationalization of §2's hard
+    rule ("if L1 and L2 are red, don't buy even if the asset thesis is perfect").
+
+    Deliberately transparent and anti-overfitting (§9): few components, equal fixed
+    weights, no weight optimization on history. Components with no data are skipped, so the
+    score is over whatever is available (``n`` reports how many voted).
+
+    Returns ``{has_data, score, n, label, components: [{name, reading, vote, rationale}],
+    risk_on_at, risk_off_at}`` with ``label`` in {"risk_on","neutral","risk_off"}.
+    """
+    cfg = settings.raw.get("indicators", {}).get("regime", {})
+    nl_dead = float(cfg.get("net_liquidity_dead_pct", 0.5))
+    nfci_dead = float(cfg.get("nfci_dead", 0.05))
+    hy_dead = float(cfg.get("hy_dead_pp", 0.10))
+    dxy_dead = float(cfg.get("dxy_dead_pct", 0.5))
+    stab_dead = float(cfg.get("stablecoins_dead_pct", 0.5))
+    fund_extreme = float(cfg.get("funding_z_extreme", 2.0))
+    etf_min = int(cfg.get("etf_streak_min", 2))
+    on_at = int(cfg.get("risk_on_at", 2))
+    off_at = int(cfg.get("risk_off_at", -2))
+
+    # Local import avoids a circular dependency with transform.rally_quality.
+    from transform.rally_quality import etf_flow_summary, funding_zscore
+
+    components: list[dict[str, Any]] = []
+
+    def add(name: str, reading: str, vote: int, rationale: str) -> None:
+        components.append({"name": name, "reading": reading, "vote": vote, "rationale": rationale})
+
+    # 1. Fed net liquidity, 13-week % change (rising = risk-on).
+    liq = fed_liquidity_summary(conn, settings)
+    if liq.get("has_data") and liq.get("chg_13w_pct") is not None:
+        chg = liq["chg_13w_pct"]
+        add("Liquidez neta Fed", f"{chg:+.1f}% 13s", _vote(chg, -nl_dead, nl_dead),
+            "más liquidez neta = viento de cola risk-on")
+
+    # 2. NFCI level (>0 = restrictive = risk-off; direction inverted).
+    nfci = latest_observation(conn, "fred", "NFCI")
+    if nfci is not None:
+        lvl = nfci[1]
+        add("NFCI (condiciones fin.)", f"{lvl:+.2f}", _vote(lvl, -nfci_dead, nfci_dead, direction=-1),
+            ">0 = condiciones restrictivas = risk-off")
+
+    # 3. HY spread, 4-week change in pp (widening = risk-off; inverted).
+    hy_chg = abs_change_over_days(series_history(conn, "fred", "BAMLH0A0HYM2"), 28)
+    if hy_chg is not None:
+        add("Spread HY (4s)", f"{hy_chg:+.2f} pp", _vote(hy_chg, -hy_dead, hy_dead, direction=-1),
+            "ensanchándose = estrés de crédito = risk-off")
+
+    # 4. DXY, 4-week % change (dollar up = headwind = risk-off; inverted).
+    dxy_chg = pct_change_over_days(series_history(conn, "fred", "DTWEXBGS"), 28)
+    if dxy_chg is not None:
+        add("DXY (4s)", f"{dxy_chg:+.1f}%", _vote(dxy_chg, -dxy_dead, dxy_dead, direction=-1),
+            "dólar fuerte = viento en contra = risk-off")
+
+    # 5. BTC ETF-flow streak (sustained inflows = risk-on).
+    etf = etf_flow_summary(conn, settings)
+    btc_etf = next((r for r in etf.to_dict("records") if r["asset"] == "BTC"), None) if not etf.empty else None
+    if btc_etf is not None:
+        sign, days = btc_etf["streak_sign"], btc_etf["streak_days"]
+        vote = (1 if sign > 0 else -1) if (days >= etf_min and sign != 0) else 0
+        word = "entradas" if sign > 0 else "salidas" if sign < 0 else "—"
+        add("Flujos ETF BTC", f"{days} d {word}", vote, "entradas sostenidas = demanda spot = risk-on")
+
+    # 6. Stablecoin supply, 30-day % change (growing = liquidity entering = risk-on).
+    stab = stablecoins_summary(conn, settings)
+    if stab.get("has_data") and stab.get("chg_30d_pct") is not None:
+        chg = stab["chg_30d_pct"]
+        add("Stablecoins (30 d)", f"{chg:+.1f}%", _vote(chg, -stab_dead, stab_dead),
+            "oferta creciente = dry powder entrando = risk-on")
+
+    # 7. BTC funding z: crowded longs (z>+extreme) = froth/cascade risk = risk-off; washed
+    # out (z<-extreme) = capitulation/squeeze setup = risk-on. Neutral in between.
+    exchanges = settings.source("derivatives").get("exchanges", ["binance", "bybit"])
+    window = int(settings.source("derivatives").get("zscore_window_days", 90))
+    btc_funding = pd.Series(dtype="float64")
+    for ex in exchanges:
+        s = series_history(conn, "derivatives", f"BTC:funding:{ex}").dropna()
+        if not s.empty:
+            btc_funding = s
+            break
+    if not btc_funding.empty:
+        z = funding_zscore(btc_funding, window)
+        if z is not None:
+            vote = -1 if z > fund_extreme else 1 if z < -fund_extreme else 0
+            add("Funding z BTC", f"{z:+.2f}", vote,
+                "z>+2 froth (riesgo de cascada) = risk-off; z<-2 lavado = risk-on")
+
+    score = sum(c["vote"] for c in components)
+    label = "risk_on" if score >= on_at else "risk_off" if score <= off_at else "neutral"
+    return {
+        "has_data": bool(components),
+        "score": score,
+        "n": len(components),
+        "label": label,
+        "components": components,
+        "risk_on_at": on_at,
+        "risk_off_at": off_at,
+    }

@@ -24,8 +24,10 @@ import pytest
 from core.config import load_settings
 from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations
 from transform.indicators import (
+    _vote,
     coinbase_premium_summary,
     fed_net_liquidity_series,
+    regime_scoreboard,
     relative_premium_pct,
     rotation_summary,
 )
@@ -239,6 +241,55 @@ def test_market_structure_basis_and_ratios(conn, settings) -> None:
     assert btc["basis_pct"] == pytest.approx(1.0)  # (101000/100000 - 1)*100
     assert btc["top_ls_account"] == pytest.approx(1.2)
     assert btc["taker_ratio"] == pytest.approx(1.05)
+
+
+def test_regime_vote():
+    """B1: dead-zone vote, both directions."""
+    # direction +1: above high = risk-on, below low = risk-off.
+    assert _vote(1.0, -0.5, 0.5) == 1
+    assert _vote(-1.0, -0.5, 0.5) == -1
+    assert _vote(0.0, -0.5, 0.5) == 0
+    # direction -1 (a rise is risk-off, e.g. NFCI/DXY/HY).
+    assert _vote(1.0, -0.5, 0.5, direction=-1) == -1
+    assert _vote(-1.0, -0.5, 0.5, direction=-1) == 1
+
+
+def test_regime_scoreboard_risk_off(conn, settings) -> None:
+    """B1: NFCI restrictive + BTC ETF outflow streak -> score -2 -> risk_off."""
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [_obs("NFCI", _day(8), 0.50, "fred")]  # >0.05 dead-zone, restrictive -> -1
+            + [_obs("etf:btc:total", _day(d), -50.0, "farside") for d in (6, 7, 8)]  # 3d outflow -> -1
+        ),
+    )
+    r = regime_scoreboard(conn, settings)
+    assert r["has_data"] is True
+    names = {c["name"]: c["vote"] for c in r["components"]}
+    assert names["NFCI (condiciones fin.)"] == -1
+    assert names["Flujos ETF BTC"] == -1
+    assert r["score"] == sum(c["vote"] for c in r["components"])  # score is the transparent sum
+    assert r["score"] <= r["risk_off_at"] and r["label"] == "risk_off"
+
+
+def test_regime_scoreboard_risk_on(conn, settings) -> None:
+    """B1: NFCI loose + BTC ETF inflow streak -> score +2 -> risk_on."""
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [_obs("NFCI", _day(8), -0.50, "fred")]  # loose -> +1
+            + [_obs("etf:btc:total", _day(d), 60.0, "farside") for d in (7, 8)]  # 2d inflow -> +1
+        ),
+    )
+    r = regime_scoreboard(conn, settings)
+    assert r["score"] >= r["risk_on_at"] and r["label"] == "risk_on"
+
+
+def test_regime_scoreboard_neutral(conn, settings) -> None:
+    """B1: a single in-dead-zone signal -> score 0 -> neutral."""
+    upsert_observations(conn, pd.DataFrame([_obs("NFCI", _day(8), 0.0, "fred")]))
+    r = regime_scoreboard(conn, settings)
+    assert r["n"] == 1 and r["score"] == 0 and r["label"] == "neutral"
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

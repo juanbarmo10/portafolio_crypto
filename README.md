@@ -66,6 +66,12 @@ Incluye hasta ahora:
   - **Nivel 3 (tesis):** **fundamentales on-chain de BTC** (Blockchain.com: hash rate, dificultad,
     transacciones, direcciones, ingresos de mineros) y **revenue como serie histórica** (DefiLlama)
     para un MC/Revenue con tendencia. Todo diario, sin intradía (sección 2).
+- **Semáforo de régimen (Parte B, B1):** un *marcador rector* **risk-on / neutral / risk-off** en la
+  cabecera del panel que agrega las señales de nivel 1+2 (liquidez neta, NFCI, spread HY, DXY, racha
+  de flujos ETF, stablecoins, funding z de BTC) en un **score transparente con desglose por señal**.
+  Operacionaliza la regla dura de la sección 2 (si 1-2 están en rojo, no comprar aunque la tesis del
+  activo sea perfecta) y recomienda **posponer** el aporte mensual en rojo. Pesos iguales fijos y
+  umbrales en `config` — pocos componentes, sin optimizar sobre el histórico (anti-overfitting).
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -97,7 +103,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 162) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 166) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

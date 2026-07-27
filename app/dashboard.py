@@ -55,6 +55,7 @@ from transform.indicators import (  # noqa: E402
     liquidations_summary,
     macro_table,
     portfolio_table,
+    regime_scoreboard,
     rotation_summary,
     stablecoins_summary,
     thesis_invalidation_table,
@@ -244,6 +245,89 @@ def _dilution_tooltip(record: dict) -> str:
 
 
 # --- Sections ----------------------------------------------------------------
+
+
+_REGIME_STYLE = {
+    "risk_on": ("🟢", "Risk-on"),
+    "neutral": ("🟠", "Neutral"),
+    "risk_off": ("🔴", "Risk-off"),
+}
+
+
+def _regime_vote_label(vote: int) -> str:
+    """Vote -> arrow label for the regime breakdown table."""
+    return {1: "▲ risk-on", 0: "▬ neutral", -1: "▼ risk-off"}.get(vote, "—")
+
+
+def _color_regime_vote(cell: object) -> str:
+    """Styler CSS: green risk-on, red risk-off, gray neutral."""
+    s = str(cell)
+    if "risk-on" in s:
+        return "color:#16a34a;font-weight:600"
+    if "risk-off" in s:
+        return "color:#dc2626;font-weight:600"
+    return "color:#9ca3af"
+
+
+def _section_regime(conn, settings) -> None:
+    """B1 — semáforo de régimen: el *marcador rector* que agrega niveles 1+2 (sección 2).
+
+    Un estado risk-on / neutral / risk-off, transparente (desglose por señal), que
+    operacionaliza la regla dura: si 1-2 están en rojo, no se compra aunque la tesis esté
+    perfecta. Es un estado **semanal**, no un gatillo — y **bloquea** malas decisiones en
+    rojo en vez de invitar a operar.
+    """
+    r = regime_scoreboard(conn, settings)
+    if not r.get("has_data"):
+        return
+    st.header("Régimen de mercado", anchor="regimen")
+    icon, text = _REGIME_STYLE[r["label"]]
+    c1, c2 = st.columns([1, 3])
+    c1.metric(
+        "Régimen (niveles 1+2)",
+        f"{icon} {text}",
+        delta=f"score {r['score']:+d} · {r['n']} señales",
+        delta_color="off",
+        help="Marcador rector: suma de votos de las señales macro y de estructura. Estado "
+        "semanal, no un gatillo de operación (sección 2).",
+    )
+    if r["label"] == "risk_off":
+        c2.error(
+            "**Regla dura (sección 2):** niveles 1-2 en rojo → **no comprar** aunque la tesis "
+            "del activo sea perfecta. Considera **posponer** el aporte mensual unos días."
+        )
+    elif r["label"] == "neutral":
+        c2.info(
+            "Régimen **mixto**. Ejecuta el plan DCA con cautela; revisa el desglose y los "
+            "eventos próximos antes de desplegar el aporte."
+        )
+    else:
+        c2.success(
+            "**Viento de cola risk-on.** Contexto favorable para el plan DCA según lo escrito "
+            "(sección 2, nivel 4). No es una señal de compra: sigue tu plan."
+        )
+    with st.expander("Desglose del régimen (transparente)"):
+        rows = [
+            {
+                "Señal": c["name"],
+                "Lectura": c["reading"],
+                "Voto": _regime_vote_label(c["vote"]),
+                "Por qué": c["rationale"],
+            }
+            for c in r["components"]
+        ]
+        show = pd.DataFrame(rows)
+        st.dataframe(
+            show.style.map(_color_regime_vote, subset=["Voto"]),
+            hide_index=True,
+            width="stretch",
+            column_config={"Por qué": st.column_config.TextColumn(width="large")},
+        )
+        st.caption(
+            f"Score = suma de votos (+1 risk-on / 0 neutral / −1 risk-off). Umbrales fijos y "
+            f"pocos componentes por diseño (anti-overfitting, sección 9): score ≥ {r['risk_on_at']} "
+            f"= risk-on, ≤ {r['risk_off_at']} = risk-off. No se optimizan pesos sobre el histórico."
+        )
 
 
 def _section_macro(conn, settings) -> None:
@@ -1447,6 +1531,7 @@ def _sidebar_nav(settings) -> None:
     where that section is not rendered.
     """
     checklist = [
+        ("Régimen de mercado", "regimen"),
         ("1 · Macro", "macro"),
         ("2 · Radar", "radar"),
         ("3 · Estructura de mercado", "estructura"),
@@ -1484,6 +1569,7 @@ def main() -> None:
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
             "Frecuencia de consulta óptima: semanal (sección 2)."
         )
+        _section_regime(conn, settings)
         _events_strip(conn, settings)
         st.divider()
         _section_macro(conn, settings)

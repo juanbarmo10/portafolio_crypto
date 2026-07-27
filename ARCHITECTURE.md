@@ -128,6 +128,13 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
   (*inner join*) para que un desfase de un día no contamine una señal pequeña.
 - **Rotación** — ETH/BTC y TOTAL2/TOTAL3 (mcap total menos BTC, y menos BTC y ETH) desde datos
   propios; complementan la dominancia BTC para "¿entorno favorable a altcoins?".
+- **Semáforo de régimen** — *marcador rector* que agrega las señales de nivel 1+2 (liquidez neta,
+  NFCI, spread HY, DXY, racha de flujos ETF, stablecoins, funding z) en un score. Cada señal vota
+  `+1/0/−1` a través de una *dead-zone* documentada en config; el score es la **suma con pesos
+  iguales fijos**, clasificada con umbrales fijos. Es la operacionalización de la regla dura de §1
+  (si niveles 1-2 en rojo, no comprar) y es deliberadamente **transparente** (desglose por señal) y
+  **anti-overfitting**: pocos componentes, pesos fijos, sin optimizar sobre el histórico (§4). Es un
+  estado semanal que **bloquea** malas decisiones, no un gatillo de operación.
 
 ## 6. Trampas del dominio que el diseño evita
 

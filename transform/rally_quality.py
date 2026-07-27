@@ -177,7 +177,7 @@ def market_structure_table(
             spot_hist = series_history(conn, "coingecko", f"{cid}:price").dropna()
             if not spot_hist.empty:
                 pair = pd.concat(
-                    {"perp": close.dropna(), "spot": spot_hist}, axis=1, join="inner"
+                    {"perp": close.dropna(), "spot": spot_hist}, axis=1, join="inner", sort=False
                 ).dropna()
                 if not pair.empty:
                     basis_pct = relative_premium_pct(

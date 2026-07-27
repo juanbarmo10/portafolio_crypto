@@ -332,6 +332,13 @@ indicators:
   # B5: un unlock que libera >= este % del circulante dentro de 30 d se marca en ROJO
   # (magnitud, no solo fecha; CLAUDE.md sección 5: "unlock > 5% del TVL/circulante").
   unlock_pct_alert: 5.0
+  # --- B2/B3: riesgo de cartera (IDEAS_MEJORAS Parte B) -----------------------
+  # Correlación de retornos, beta a BTC, volatilidad, drawdown, concentración (HHI) y
+  # contribución al riesgo. Sobre precios propios (backfill), sin dependencia nueva.
+  risk:
+    window_days: 90          # ventana de retornos diarios para correlación/beta/vol
+    annualization_days: 365  # cripto opera todos los días (no 252 como en bolsa)
+    high_correlation: 0.8    # |ρ| ≥ esto = "misma apuesta" (concentración disfrazada, §5)
   # --- B1: semáforo de régimen (IDEAS_MEJORAS Parte B) -----------------------
   # Score compuesto y TRANSPARENTE de nivel 1+2. Cada señal vota +1 risk-on / 0
   # neutral / -1 risk-off; el total se clasifica con los umbrales de abajo. Pocos

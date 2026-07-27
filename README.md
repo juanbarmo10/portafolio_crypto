@@ -78,6 +78,12 @@ Incluye hasta ahora:
   añadiendo en vez de vender). WBETH se clasifica como ETH (núcleo) manteniendo su propio precio. Y
   el tablero de invalidación usa la **magnitud** del unlock (`unlock_pct`, % del circulante), no solo
   la fecha: un unlock grande y próximo se marca en rojo (sección 5: "unlock > 5% del circulante").
+- **Riesgo de cartera (Parte B, B2/B3):** con el historial de precios, **matriz de correlación**
+  (heatmap) y **beta a BTC**, más **volatilidad anualizada, max drawdown, concentración (HHI / N
+  efectivo) y contribución al riesgo** por posición (`RCᵢ = wᵢ·(Σw)ᵢ/(wᵀΣw)`). Hace visible con
+  números la diversificación **real** (por modo de fallo, no por nº de tickers): p. ej. BTC/ETH/XRP
+  correlados ~0.87 y N efectivo ~1.6 = casi una sola apuesta. Sobre datos propios, sin dependencia
+  nueva; WBETH se une a ETH en los pesos de riesgo.
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -109,7 +115,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 170) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 174) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

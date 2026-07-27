@@ -143,6 +143,12 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
 - **Magnitud del unlock** — no solo la fecha: `unlock_pct` (% del circulante que se libera) entra en
   el tablero de invalidación — un unlock **grande y próximo** (≥ umbral dentro de 30 d) se marca en
   rojo, no solo por inminencia (§5: "unlock > 5% del circulante" es la regla accionable).
+- **Riesgo de cartera** — sobre retornos diarios propios (backfill): **correlación**, **beta a BTC**,
+  **volatilidad** anualizada (365 d, no 252), **max drawdown** de la senda de valor, **concentración**
+  (HHI y N efectivo = 1/HHI) y **contribución al riesgo** `RCᵢ = wᵢ·(Σw)ᵢ/(wᵀΣw)` (suma 100 %: una
+  posición del 15 % del capital puede ser el 40 % del riesgo si es la más volátil). Cuantifica la
+  diversificación **real** por modo de fallo (§5): posiciones correladas ~0.9 son una sola apuesta,
+  no diez. WBETH se une a ETH en los pesos (misma apuesta), conservando su propio precio.
 
 ## 6. Trampas del dominio que el diseño evita
 

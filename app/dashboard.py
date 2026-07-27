@@ -67,6 +67,7 @@ from transform.indicators import (  # noqa: E402
     wallet_value_history,
 )
 from validation.backtest import funding_zscore_backtest  # noqa: E402
+from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
 from transform.rally_quality import (  # noqa: E402
     RALLY_CAPITULATION,
     RALLY_CONVICTION,
@@ -100,6 +101,11 @@ def _fmt_usd(x: float | None) -> str:
 def _fmt_ratio(x: float | None) -> str:
     """Format a plain ratio to two decimals, or an em dash when missing."""
     return "—" if x is None or pd.isna(x) else f"{x:.2f}"
+
+
+def _fmt_pct0(x: float | None) -> str:
+    """Format a percent with no sign and no decimals ('42%'), or an em dash."""
+    return "—" if x is None or pd.isna(x) else f"{x:.0f}%"
 
 
 def _fmt_signed_usd(x: float | None) -> str:
@@ -1235,6 +1241,9 @@ def _section_execution(conn, settings) -> None:
     # --- Drift vs. objetivo (B4) ---------------------------------------------
     _drift_view(conn, settings, holdings)
 
+    # --- Riesgo de cartera (B2/B3) -------------------------------------------
+    _risk_view(conn, settings, holdings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -1296,6 +1305,106 @@ def _drift_view(conn, settings, holdings) -> None:
             f"e impuestos, sección 4). Efectivo disponible: {_fmt_usd(cash)}. Los activos fuera de "
             "la sección 5 (p. ej. WBETH) aparecen como *Sin tramo*."
         )
+
+
+def _corr_heatmap(cm: pd.DataFrame):
+    """Altair heatmap of a correlation matrix (B2). None if the matrix is empty."""
+    if cm.empty:
+        return None
+    syms = list(cm.columns)
+    records = [
+        {"x": a, "y": b, "corr": (None if pd.isna(cm.loc[a, b]) else round(float(cm.loc[a, b]), 2))}
+        for a in syms
+        for b in syms
+    ]
+    data = alt.Data(values=records)
+    base = alt.Chart(data).encode(
+        x=alt.X("x:N", title=None, sort=syms),
+        y=alt.Y("y:N", title=None, sort=syms),
+    )
+    heat = base.mark_rect().encode(
+        color=alt.Color(
+            "corr:Q",
+            scale=alt.Scale(scheme="redblue", domain=[-1, 1], reverse=True),
+            legend=alt.Legend(title="ρ"),
+        )
+    )
+    text = base.mark_text(baseline="middle").encode(
+        text=alt.Text("corr:Q", format=".2f"),
+        color=alt.condition("abs(datum.corr) > 0.6", alt.value("white"), alt.value("black")),
+    )
+    return (heat + text).properties(height=min(70 + 26 * len(syms), 420))
+
+
+def _risk_view(conn, settings, holdings) -> None:
+    """B2/B3: portfolio risk — vol, beta, HHI, drawdown, risk contribution + correlation (level 4)."""
+    summary = portfolio_risk_summary(conn, settings, holdings)
+    if not summary.get("has_data"):
+        return
+    st.subheader("Riesgo de cartera")
+    hhi = summary.get("hhi")
+    c = st.columns(5)
+    c[0].metric(
+        "Vol. anualizada", _fmt_pct0(summary.get("port_vol_annual_pct")),
+        help="Volatilidad anualizada de la cartera (√(wᵀΣw), 365 d). Sobre precios propios.",
+    )
+    c[1].metric(
+        "Beta a BTC", _fmt_ratio(summary.get("port_beta_btc")),
+        help="Sensibilidad de la cartera a BTC (ponderada). >1 amplifica a BTC, <1 atenúa.",
+    )
+    eff = summary.get("effective_n")
+    c[2].metric(
+        "N efectivo", "—" if not eff else f"{eff:.1f}",
+        help=f"1/HHI (HHI={hhi:.2f} si aplica). Nº efectivo de posiciones: bajo = concentrado.",
+    )
+    c[3].metric(
+        "Max drawdown", _fmt_pct(summary.get("max_drawdown_pct")),
+        help="Peor caída pico-valle de la cartera simulada (tenencias actuales a precios pasados).",
+    )
+    c[4].metric(
+        "Correlación media", _fmt_ratio(summary.get("avg_correlation")),
+        help="Correlación media entre posiciones. Alta = diversificación aparente, no real (§5).",
+    )
+
+    rows = [
+        {
+            "Activo": p["symbol"],
+            "Peso": f"{p['weight_pct']:.1f}%",
+            "Vol. anual": _fmt_pct0(p["vol_annual_pct"]),
+            "Beta BTC": _fmt_ratio(p["beta_btc"]),
+            "Contrib. riesgo": f"{p['risk_contribution_pct']:.1f}%",
+        }
+        for p in summary["per_asset"]
+    ]
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Contrib. riesgo": st.column_config.TextColumn(
+                help="Contribución a la varianza de la cartera (RCᵢ = wᵢ·(Σw)ᵢ/(wᵀΣw)). Una "
+                "posición del 15% del capital puede ser el 40% del riesgo si es la más volátil."
+            ),
+            "Beta BTC": st.column_config.TextColumn(help="Beta del activo frente a BTC."),
+        },
+    )
+
+    ch = _corr_heatmap(correlation_matrix(conn, settings, holdings))
+    if ch is not None:
+        st.altair_chart(ch, width="stretch")
+    pairs = summary.get("high_corr_pairs", [])
+    hi = settings.raw.get("indicators", {}).get("risk", {}).get("high_correlation", 0.8)
+    if pairs:
+        txt = " · ".join(f"{a}–{b} {c:+.2f}" for a, b, c in pairs)
+        st.caption(
+            f"**Pares muy correlacionados (|ρ|≥{hi:.1f}):** {txt}. Cuentan casi como una sola "
+            "apuesta — su tamaño combinado debe respetar el límite del tramo (§5, concentración "
+            "disfrazada de diversificación)."
+        )
+    st.caption(
+        f"Riesgo sobre precios propios (backfill); ventana de {summary['window_days']} d. "
+        "Diversificación **real** = por modo de fallo, no por número de tickers (sección 5)."
+    )
 
 
 def _wallet_pnl_view(conn, settings, holdings) -> None:

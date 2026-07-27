@@ -1073,6 +1073,124 @@ def capital_deployed_summary(conn: sqlite3.Connection, settings: Settings) -> di
     }
 
 
+def _price_asof_strict(conn: sqlite3.Connection, series_id: str, ts: str) -> float | None:
+    """Latest CoinGecko price on/before ``ts``, or None if there is none before it.
+
+    Unlike :func:`_usd_price_asof`, this does NOT fall back to today's price — a missing
+    historical price returns None so the caller can flag incomplete coverage instead of
+    silently comparing against a wrong (present-day) value.
+    """
+    row = conn.execute(
+        "SELECT value FROM observations WHERE source = 'coingecko' AND series_id = ? "
+        "AND ts <= ? ORDER BY ts DESC LIMIT 1",
+        (series_id, ts),
+    ).fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def behavioral_scorecard(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """B6: did your trading activity beat buy-and-hold? (§2 anti-over-trading thesis, level 4).
+
+    Builds TWO portfolios from the SAME real cashflows (your ``trades``): the ACTUAL assets you
+    bought/sold, and a counterfactual routing every dollar into/out of **BTC** at the trade-date
+    price ("hold-BTC"). Compares their current value on the same net-invested base — the direct
+    "did my picking/timing beat just holding BTC?" test. Adds friction (fees as % of capital),
+    activity (trade count/frequency) and the capital-weighted entry-timing edge vs. blind DCA.
+
+    Honest scope: uses ``trades`` only (both sides), so it measures the capital you actively
+    deployed, not holdings acquired via Earn/Convert. Trades whose date has no BTC price — older
+    than CoinGecko's free 365-day *daily* window — are excluded from **both** sides (so the bases
+    stay aligned) and counted in ``bh_uncovered``; the scorecard then covers the comparable subset.
+    """
+    trades = conn.execute("SELECT symbol, side, ts, amount, cost FROM trades ORDER BY ts").fetchall()
+    if not trades:
+        return {"has_data": False}
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+
+    net_tokens: dict[str, float] = {}
+    net_btc = 0.0
+    invested = 0.0
+    n_buys = n_sells = 0
+    bh_uncovered = 0
+    ts_list: list[str] = []  # asset (non-stablecoin) trades placed on BOTH sides
+    for symbol, side, ts, amount, cost in trades:
+        base = symbol.split("/")[0]
+        if base in STABLECOINS:
+            continue
+        btc_px = _price_asof_strict(conn, "bitcoin:price", ts)
+        if not (btc_px and cost):
+            # No BTC price on this trade's date (older than the free 365-day daily window):
+            # exclude it from BOTH sides so the actual and hold-BTC bases stay aligned.
+            bh_uncovered += 1
+            continue
+        ts_list.append(ts)
+        sign = 1.0 if side == "buy" else -1.0
+        net_tokens[base] = net_tokens.get(base, 0.0) + sign * (amount or 0.0)
+        invested += sign * cost
+        net_btc += sign * (cost / btc_px)
+        if side == "buy":
+            n_buys += 1
+        else:
+            n_sells += 1
+
+    actual_value = 0.0
+    for base, tok in net_tokens.items():
+        cid = id_by_symbol.get(base)
+        px = _val(latest_observation(conn, "coingecko", f"{cid}:price")) if cid else None
+        if px is not None:
+            actual_value += tok * px
+    btc_now = _val(latest_observation(conn, "coingecko", "bitcoin:price"))
+    bh_value = net_btc * btc_now if btc_now is not None else None
+
+    # Actual and hold-BTC share the same trade subset and the same net-invested base, so the
+    # edge is always comparable; ``bh_uncovered`` reports how many trades were left out.
+    actual_ret = (actual_value / invested - 1.0) * 100.0 if invested > 0 else None
+    bh_ret = (bh_value / invested - 1.0) * 100.0 if (bh_value is not None and invested > 0) else None
+    edge = (actual_ret - bh_ret) if (actual_ret is not None and bh_ret is not None) else None
+
+    try:
+        span_days = (
+            max((datetime.fromisoformat(max(ts_list)) - datetime.fromisoformat(min(ts_list))).days, 0)
+            if ts_list
+            else None
+        )
+    except (ValueError, TypeError):
+        span_days = None
+    n_trades = n_buys + n_sells
+    tpm = (n_trades / (span_days / 30.0)) if span_days and span_days > 0 else None
+
+    exec_sum = execution_summary(conn, settings)
+    fees_usd = exec_sum.get("fees_usd") if exec_sum.get("has_trades") else None
+    fees_drag = exec_sum.get("fees_drag_pct") if exec_sum.get("has_trades") else None
+
+    dca = dca_vs_baseline_table(conn, settings)
+    w_edge = None
+    if not dca.empty:
+        rows = [r for r in dca.to_dict("records") if r["edge_pp"] is not None and r["invested_usd"] > 0]
+        tot = sum(r["invested_usd"] for r in rows)
+        if tot > 0:
+            w_edge = sum(r["edge_pp"] * r["invested_usd"] for r in rows) / tot
+
+    return {
+        "has_data": True,
+        "n_trades": n_trades,
+        "n_buys": n_buys,
+        "n_sells": n_sells,
+        "span_days": span_days,
+        "trades_per_month": tpm,
+        "net_invested_usd": invested,
+        "actual_value_usd": actual_value,
+        "actual_ret_pct": actual_ret,
+        "bh_btc_value_usd": bh_value,
+        "bh_btc_ret_pct": bh_ret,
+        "edge_vs_hold_btc_pp": edge,
+        "bh_uncovered": bh_uncovered,
+        "fees_usd": fees_usd,
+        "fees_drag_pct": fees_drag,
+        "weighted_timing_edge_pp": w_edge,
+    }
+
+
 def earn_rewards_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Passive yield earned via Simple Earn over the window (level 4).
 

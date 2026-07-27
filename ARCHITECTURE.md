@@ -149,6 +149,12 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
   posición del 15 % del capital puede ser el 40 % del riesgo si es la más volátil). Cuantifica la
   diversificación **real** por modo de fallo (§5): posiciones correladas ~0.9 son una sola apuesta,
   no diez. WBETH se une a ETH en los pesos (misma apuesta), conservando su propio precio.
+- **Scorecard conductual** — construye dos carteras con el **mismo flujo de capital** (las
+  operaciones reales): los activos operados vs. un contrafactual que enruta cada dólar a **BTC** al
+  precio de la fecha de cada operación. Compara su valor actual sobre la misma base invertida — el
+  test directo de "¿mi selección/timing batió a solo mantener BTC?". Es el widget que **valida la
+  tesis anti-over-trading** del proyecto. Honesto: usa solo operaciones (ambos lados), y excluye de
+  la comparación las anteriores a la ventana de 365 días gratis de precios (contándolas).
 
 ## 6. Trampas del dominio que el diseño evita
 

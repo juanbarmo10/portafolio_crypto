@@ -23,9 +23,10 @@ import pandas as pd
 import pytest
 
 from core.config import load_settings
-from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations
+from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations, upsert_trades
 from transform.indicators import (
     _vote,
+    behavioral_scorecard,
     coinbase_premium_summary,
     drift_vs_target,
     fed_net_liquidity_series,
@@ -353,6 +354,38 @@ def test_unlock_magnitude_amber_when_small(conn, settings) -> None:
     df = thesis_invalidation_table(conn, settings)
     sui = df[df["symbol"] == "SUI"].iloc[0]
     assert sui["status"] == "amber"
+
+
+def test_behavioral_scorecard_edge_vs_hold_btc(conn, settings) -> None:
+    """B6: an ETH buy that outran flat BTC -> positive edge; friction (fees) computed."""
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", _day(24), 50000.0, "coingecko"),
+                _obs("bitcoin:price", _day(27), 50000.0, "coingecko"),  # BTC flat
+                _obs("ethereum:price", _day(27), 3000.0, "coingecko"),  # ETH now 3000
+            ]
+        ),
+    )
+    upsert_trades(
+        conn,
+        pd.DataFrame(
+            [
+                {
+                    "trade_id": "t1", "exchange": "binance", "symbol": "ETH/USDT", "side": "buy",
+                    "ts": _day(24), "price": 2000.0, "amount": 1.0, "cost": 2000.0,
+                    "fee": 2.0, "fee_currency": "USDT",
+                }
+            ]
+        ),
+    )
+    s = behavioral_scorecard(conn, settings)
+    assert s["has_data"] and s["n_trades"] == 1 and s["n_buys"] == 1
+    assert s["actual_ret_pct"] == pytest.approx(50.0)   # 1 ETH: 2000 -> 3000
+    assert s["bh_btc_ret_pct"] == pytest.approx(0.0)     # 0.04 BTC, BTC flat
+    assert s["edge_vs_hold_btc_pp"] == pytest.approx(50.0) and s["bh_uncovered"] == 0
+    assert s["fees_drag_pct"] == pytest.approx(0.1)      # $2 / $2000
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

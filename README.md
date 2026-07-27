@@ -84,6 +84,12 @@ Incluye hasta ahora:
   números la diversificación **real** (por modo de fallo, no por nº de tickers): p. ej. BTC/ETH/XRP
   correlados ~0.87 y N efectivo ~1.6 = casi una sola apuesta. Sobre datos propios, sin dependencia
   nueva; WBETH se une a ETH en los pesos de riesgo.
+- **Scorecard conductual (Parte B, B6):** *¿tu actividad batió a mantener?* Construye dos carteras
+  con el **mismo flujo de capital** (tus operaciones reales) — tus activos vs. **todo en BTC** a la
+  fecha de cada operación — y compara su valor actual (**edge** en pp), más fricción (comisiones como
+  % del capital) y el edge de *timing* vs. DCA ciego. Es el widget que pone a prueba la tesis
+  anti-over-trading del proyecto (sección 2). Honesto sobre cobertura: las operaciones anteriores a
+  la ventana de 365 días de CoinGecko gratis quedan fuera de la comparación (y se dice cuántas).
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -115,7 +121,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 174) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 175) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

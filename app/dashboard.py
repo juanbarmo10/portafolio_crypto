@@ -39,6 +39,7 @@ from core.config import load_settings  # noqa: E402
 from db.loader import init_db  # noqa: E402
 from db.queries import series_history, upcoming_events  # noqa: E402
 from transform.indicators import (  # noqa: E402
+    behavioral_scorecard,
     btc_onchain_summary,
     capital_deployed_summary,
     coinbase_premium_summary,
@@ -1244,6 +1245,9 @@ def _section_execution(conn, settings) -> None:
     # --- Riesgo de cartera (B2/B3) -------------------------------------------
     _risk_view(conn, settings, holdings)
 
+    # --- Scorecard conductual (B6) -------------------------------------------
+    _scorecard_view(conn, settings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -1404,6 +1408,63 @@ def _risk_view(conn, settings, holdings) -> None:
     st.caption(
         f"Riesgo sobre precios propios (backfill); ventana de {summary['window_days']} d. "
         "Diversificación **real** = por modo de fallo, no por número de tickers (sección 5)."
+    )
+
+
+def _scorecard_view(conn, settings) -> None:
+    """B6: behavioral scorecard — did your activity beat buy-and-hold? (§2 thesis, level 4)."""
+    s = behavioral_scorecard(conn, settings)
+    if not s.get("has_data"):
+        return
+    st.subheader("Scorecard conductual — ¿tu actividad batió a mantener?")
+    c = st.columns(4)
+    c[0].metric(
+        "Tu retorno (operado)", _fmt_pct(s.get("actual_ret_pct")),
+        help="Retorno del capital que desplegaste vía operaciones (valor actual / neto invertido − 1).",
+    )
+    c[1].metric(
+        "Hold BTC (mismo capital)", _fmt_pct(s.get("bh_btc_ret_pct")),
+        help="Contrafactual: si cada dólar operado hubiera ido a BTC en la fecha de cada operación "
+        "y se mantuviera hasta hoy.",
+    )
+    edge = s.get("edge_vs_hold_btc_pp")
+    c[2].metric(
+        "Edge vs. hold BTC", _fmt_pp(edge), delta_color="off",
+        help="Tu retorno − hold BTC (pp). >0 = elegir/temporizar batió a solo mantener BTC.",
+    )
+    c[3].metric(
+        "Coste de fricción", _fmt_pct0(s.get("fees_drag_pct")),
+        help="Comisiones acumuladas como % del capital invertido — el lastre de operar (sección 1/4).",
+    )
+
+    bits = []
+    if s.get("n_trades") is not None:
+        freq = f", {s['trades_per_month']:.1f}/mes" if s.get("trades_per_month") else ""
+        bits.append(f"{s['n_trades']} operaciones ({s['n_buys']} compras / {s['n_sells']} ventas{freq})")
+    if s.get("weighted_timing_edge_pp") is not None:
+        bits.append(f"edge de *timing* vs. DCA ciego: {s['weighted_timing_edge_pp']:+.1f} pp (ponderado)")
+    if s.get("fees_usd") is not None:
+        bits.append(f"comisiones {_fmt_usd(s['fees_usd'])}")
+    if bits:
+        st.caption(" · ".join(bits) + ".")
+
+    if edge is not None:
+        if edge > 0:
+            st.success(f"✅ Tu selección/timing batió a mantener BTC por **{edge:+.1f} pp**.")
+        else:
+            st.warning(
+                f"⚠️ Mantener BTC habría rendido **{-edge:.1f} pp más**. La tesis anti-over-trading "
+                "(sección 2): con horizonte de trimestres, operar menos suele ganar."
+            )
+    if s.get("bh_uncovered"):
+        st.caption(
+            f"Nota: {s['bh_uncovered']} operación(es) anteriores a la ventana de 365 días de "
+            "CoinGecko gratis quedan fuera (no hay precio BTC en su fecha); el scorecard cubre "
+            f"las {s['n_trades']} operaciones con histórico."
+        )
+    st.caption(
+        "Compara **el mismo flujo de capital** (tus operaciones) en tus activos vs. todo en BTC. "
+        "Mide el capital que operaste, no lo adquirido vía Earn/Convert (honesto)."
     )
 
 

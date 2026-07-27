@@ -373,6 +373,7 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
     tvl_amber = tvl_red / 2.0
     dil_alert = float(ind.get("dilution_ratio_alert", 0.6))
     etf_red = int(ind.get("etf_flow_streak_days", 3))
+    unlock_pct_alert = float(ind.get("unlock_pct_alert", 5.0))
     today = datetime.now(timezone.utc).date()
 
     # ETF-flow streaks (BTC/ETH): their §5 invalidation is "sustained ETF outflows".
@@ -438,14 +439,22 @@ def thesis_invalidation_table(conn: sqlite3.Connection, settings: Settings) -> p
                 unlock_days = (datetime.strptime(str(raw_unlock), "%Y-%m-%d").date() - today).days
             except ValueError:
                 unlock_days = None
+            unlock_pct = meta.get("unlock_pct")
+            has_pct = isinstance(unlock_pct, (int, float))
             if unlock_days is not None and unlock_days >= 0:
                 measurable = True
-                if unlock_days <= 7:
+                # B5: magnitude matters as much as the date (§5: "unlock > 5% del circulante").
+                pct_txt = f", {unlock_pct:.0f}% circ." if has_pct else ""
+                big = has_pct and unlock_pct >= unlock_pct_alert
+                if unlock_days <= 30 and big:  # near AND large -> red
                     severity = max(severity, 3)
-                    reasons.append(f"unlock en {unlock_days} d")
-                elif unlock_days <= 30:
+                    reasons.append(f"unlock grande en {unlock_days} d{pct_txt}")
+                elif unlock_days <= 7:  # imminent -> red regardless of (unknown) size
+                    severity = max(severity, 3)
+                    reasons.append(f"unlock en {unlock_days} d{pct_txt}")
+                elif unlock_days <= 30:  # near, small/unknown -> amber
                     severity = max(severity, 2)
-                    reasons.append(f"unlock en {unlock_days} d")
+                    reasons.append(f"unlock en {unlock_days} d{pct_txt}")
 
         status = _STATUS_BY_SEVERITY[severity] if measurable else "na"
         if reasons:
@@ -713,13 +722,16 @@ def holdings_by_group(
     if holdings is None or holdings.empty:
         return empty
     attr_by_symbol = {a["symbol"]: a.get(by) for a in settings.assets}
+    # WBETH -> ETH etc.: classify a held-but-untracked symbol under a tracked one.
+    aliases = settings.source("binance_account").get("symbol_aliases", {}) or {}
 
     def _group(row: Mapping[str, Any]) -> str:
         if bool(row.get("is_cash")):
             return "Efectivo"
+        sym = aliases.get(row["asset"], row["asset"])
         if by == "asset":
-            return str(row["asset"])
-        g = attr_by_symbol.get(row["asset"])
+            return str(sym)
+        g = attr_by_symbol.get(sym)
         return str(g) if g else "Otros"
 
     priced = holdings[holdings["value_usd"].notna()].copy()
@@ -1398,3 +1410,85 @@ def regime_scoreboard(conn: sqlite3.Connection, settings: Settings) -> dict[str,
         "risk_on_at": on_at,
         "risk_off_at": off_at,
     }
+
+
+# Tier display labels + §5 order for the drift view (B4).
+_TIER_LABELS = {
+    "nucleo": "Núcleo",
+    "satelite": "Satélite",
+    "riesgo_medio": "Riesgo medio",
+    "riesgo_alto": "Riesgo alto",
+    "observacion": "Observación",
+    "sin_tramo": "Sin tramo",
+}
+_TIER_ORDER = ["nucleo", "satelite", "riesgo_medio", "riesgo_alto", "observacion", "sin_tramo"]
+
+
+def drift_vs_target(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """B4: current allocation by tier vs. §5 target weights + rebalance-by-contribution hint.
+
+    Weights are over **invested (non-cash)** holdings — cash is dry powder, not a tramo. Target
+    weights (by tier) live in ``portfolio.target_weights`` (config). ``drift_pp`` = current −
+    target (percentage points); ``over_band`` flags |drift| > ``portfolio.drift_band_pp``. The
+    tier with the most-negative drift among those with a positive target is where the monthly
+    contribution should go — rebalance by **adding**, not selling (avoids fees/taxes). Held
+    assets outside §5 (e.g. WBETH) fall in ``sin_tramo`` (target 0), shown honestly.
+
+    Returns columns [tier, tier_label, value_usd, current_pct, target_pct, drift_pp, over_band],
+    ordered by §5 tramo. attrs: invested_usd, cash_usd, most_underweight (tier key or None).
+    """
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
+    cfg = settings.raw.get("portfolio", {})
+    targets = cfg.get("target_weights", {}) or {}
+    band = float(cfg.get("drift_band_pp", 5))
+    cols = ["tier", "tier_label", "value_usd", "current_pct", "target_pct", "drift_pp", "over_band"]
+    if holdings.empty:
+        return pd.DataFrame(columns=cols)
+
+    tier_by_symbol = {a["symbol"]: a["tier"] for a in settings.assets}
+    # Classify held-but-untracked symbols under a tracked one (e.g. WBETH -> ETH -> núcleo).
+    aliases = settings.source("binance_account").get("symbol_aliases", {}) or {}
+    by_tier: dict[str, float] = {}
+    for r in holdings.to_dict("records"):
+        val = r["value_usd"]
+        # value_usd is None for unpriceable assets (GUN/COP); pandas stores it as NaN in
+        # a float column, so `is None` misses it — guard with pd.isna to not poison the sum.
+        if r["is_cash"] or val is None or pd.isna(val):
+            continue
+        asset = aliases.get(r["asset"], r["asset"])
+        tier = tier_by_symbol.get(asset, "sin_tramo")
+        by_tier[tier] = by_tier.get(tier, 0.0) + float(val)
+    invested = sum(by_tier.values())
+    cash = float(holdings.loc[holdings["is_cash"], "value_usd"].sum(skipna=True))
+    if invested <= 0:
+        df = pd.DataFrame(columns=cols)
+        df.attrs.update(invested_usd=0.0, cash_usd=cash, most_underweight=None)
+        return df
+
+    tiers = [t for t in _TIER_ORDER if t in by_tier or t in targets]
+    rows: list[dict[str, Any]] = []
+    for tier in tiers:
+        cur = by_tier.get(tier, 0.0)
+        cur_w = cur / invested * 100.0
+        tgt_w = float(targets.get(tier, 0.0))
+        drift = cur_w - tgt_w
+        rows.append(
+            {
+                "tier": tier,
+                "tier_label": _TIER_LABELS.get(tier, tier),
+                "value_usd": cur,
+                "current_pct": cur_w,
+                "target_pct": tgt_w,
+                "drift_pp": drift,
+                "over_band": abs(drift) > band,
+            }
+        )
+    df = pd.DataFrame(rows, columns=cols)
+    # Most underweight among tiers WITH a positive target (where the contribution goes).
+    cand = df[df["target_pct"] > 0]
+    most = str(cand.sort_values("drift_pp").iloc[0]["tier"]) if not cand.empty else None
+    df.attrs.update(invested_usd=float(invested), cash_usd=cash, most_underweight=most)
+    return df

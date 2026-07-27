@@ -317,7 +317,7 @@ def test_holdings_table_drops_dust(conn, settings) -> None:
 
 
 def test_holdings_by_group_buckets_and_weights(conn, settings) -> None:
-    # BTC (tracked) $1300 · USDT cash $500 · WBETH (untracked, not in §5) 0.05@2000 = $100.
+    # BTC (tracked) $1300 · USDT cash $500 · WBETH 0.05@2000 = $100 -> classified as ETH (§ B4).
     upsert_observations(
         conn,
         pd.DataFrame(
@@ -335,13 +335,16 @@ def test_holdings_by_group_buckets_and_weights(conn, settings) -> None:
     by_cat = holdings_by_group(holdings, settings, by="thesis_category")
     groups = dict(zip(by_cat["group"], by_cat["value_usd"], strict=False))
     assert groups["Efectivo"] == pytest.approx(500.0)  # stablecoin -> cash bucket
-    assert groups["Otros"] == pytest.approx(100.0)  # WBETH not in §5 -> Otros
+    # WBETH is classified as ETH (symbol_aliases) -> ETH's thesis category, not "Otros".
+    eth_cat = next(a["thesis_category"] for a in settings.assets if a["symbol"] == "ETH")
+    assert groups[eth_cat] == pytest.approx(100.0)
+    assert "Otros" not in groups
     btc_cat = next(a["thesis_category"] for a in settings.assets if a["symbol"] == "BTC")
     assert groups[btc_cat] == pytest.approx(1300.0)  # tracked asset under its category
     assert by_cat["weight_pct"].sum() == pytest.approx(100.0)
 
     by_asset = holdings_by_group(holdings, settings, by="asset")
-    assert set(by_asset["group"]) == {"BTC", "WBETH", "Efectivo"}
+    assert set(by_asset["group"]) == {"BTC", "ETH", "Efectivo"}  # WBETH -> ETH
 
 
 def test_holdings_by_group_empty(settings) -> None:

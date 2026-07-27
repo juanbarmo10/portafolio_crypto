@@ -3,9 +3,17 @@
 # CoinGecko image URLs (fetched 2026-07-22); descriptions summarize the §5 thesis.
 # Keyed by asset symbol.
 #
-# Optional field `next_unlock: "YYYY-MM-DD"` — shown in the dilución tooltip. Left
-# unset here; the unlock calendar is ingested in Phase 2 (ingest/unlocks.py) and will
-# populate this. Do NOT fill in guessed dates: an invented unlock date is worse than none.
+# Optional field `next_unlock: "YYYY-MM-DD"` — shown in the dilución tooltip and the
+# "Próximos 7 días" strip. Left unset here; do NOT fill in guessed dates: an invented
+# unlock date is worse than none.
+# Optional field `unlock_pct: <número>` (B5) — MAGNITUD del desbloqueo, en % del
+# circulante que se libera. La magnitud manda tanto como la fecha (§5: "unlock > 5% del
+# circulante" es la regla accionable): un unlock grande y próximo se marca en ROJO en el
+# tablero de invalidación (umbral `indicators.unlock_pct_alert`). Sin él, un unlock ≤7 d
+# sigue en rojo por inminencia y ≤30 d en ámbar. Ejemplo:
+#   SUI:
+#     next_unlock: "2026-09-01"
+#     unlock_pct: 8            # 8% del circulante -> grande
 
 BTC:
   description: "Reserva de valor. Tesis: flujos ETF spot y dominancia BTC."

@@ -16,6 +16,7 @@ Covers the pure parsers (no network) and the DB-backed transforms (seeded temp S
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -26,10 +27,12 @@ from db.loader import OBSERVATION_COLUMNS, init_db, upsert_observations
 from transform.indicators import (
     _vote,
     coinbase_premium_summary,
+    drift_vs_target,
     fed_net_liquidity_series,
     regime_scoreboard,
     relative_premium_pct,
     rotation_summary,
+    thesis_invalidation_table,
 )
 from transform.rally_quality import market_structure_table
 
@@ -290,6 +293,66 @@ def test_regime_scoreboard_neutral(conn, settings) -> None:
     upsert_observations(conn, pd.DataFrame([_obs("NFCI", _day(8), 0.0, "fred")]))
     r = regime_scoreboard(conn, settings)
     assert r["n"] == 1 and r["score"] == 0 and r["label"] == "neutral"
+
+
+def test_drift_vs_target(conn, settings) -> None:
+    """B4: allocation drift by tier vs. §5 targets; cash excluded; most-underweight found."""
+    holdings = pd.DataFrame(
+        [
+            {"asset": "BTC", "value_usd": 550.0, "is_cash": False},  # nucleo (target 55)
+            {"asset": "ETH", "value_usd": 100.0, "is_cash": False},  # nucleo -> 650 = 65%
+            {"asset": "XRP", "value_usd": 100.0, "is_cash": False},  # satelite (10) -> 10%
+            {"asset": "SOL", "value_usd": 100.0, "is_cash": False},  # riesgo_medio (20) -> 10%
+            {"asset": "TAO", "value_usd": 150.0, "is_cash": False},  # riesgo_alto (15) -> 15%
+            {"asset": "USDT", "value_usd": 200.0, "is_cash": True},  # cash: excluded from weights
+            {"asset": "GUN", "value_usd": float("nan"), "is_cash": False},  # unpriceable -> skipped
+        ]
+    )
+    df = drift_vs_target(conn, settings, holdings)
+    by_tier = {r["tier"]: r for r in df.to_dict("records")}
+    assert df.attrs["invested_usd"] == 1000.0 and df.attrs["cash_usd"] == 200.0
+    assert by_tier["nucleo"]["current_pct"] == pytest.approx(65.0)
+    assert by_tier["nucleo"]["drift_pp"] == pytest.approx(10.0) and by_tier["nucleo"]["over_band"]
+    assert by_tier["riesgo_medio"]["drift_pp"] == pytest.approx(-10.0)
+    assert by_tier["satelite"]["drift_pp"] == pytest.approx(0.0) and not by_tier["satelite"]["over_band"]
+    # Contribution should go to the most-underweight tier with a positive target.
+    assert df.attrs["most_underweight"] == "riesgo_medio"
+
+
+def test_drift_symbol_alias_wbeth_as_eth(conn, settings) -> None:
+    """WBETH (held, untracked) is classified under ETH's tier (núcleo) via symbol_aliases."""
+    holdings = pd.DataFrame(
+        [
+            {"asset": "ETH", "value_usd": 100.0, "is_cash": False},
+            {"asset": "WBETH", "value_usd": 100.0, "is_cash": False},  # -> ETH -> núcleo
+        ]
+    )
+    df = drift_vs_target(conn, settings, holdings)
+    by_tier = {r["tier"]: r for r in df.to_dict("records")}
+    assert "sin_tramo" not in by_tier  # WBETH is not left unclassified
+    assert by_tier["nucleo"]["value_usd"] == pytest.approx(200.0)  # ETH + WBETH both núcleo
+
+
+def _in_days(n: int) -> str:
+    return (datetime.now(timezone.utc).date() + timedelta(days=n)).isoformat()
+
+
+def test_unlock_magnitude_red_when_big_and_near(conn, settings) -> None:
+    """B5: a large unlock (>= alert %) within 30d -> red (magnitude, not just date)."""
+    settings.asset_meta["SUI"] = {**settings.asset_meta.get("SUI", {}),
+                                  "next_unlock": _in_days(25), "unlock_pct": 8}  # 25d, 8% -> red
+    df = thesis_invalidation_table(conn, settings)
+    sui = df[df["symbol"] == "SUI"].iloc[0]
+    assert sui["status"] == "red" and "grande" in sui["reason"]
+
+
+def test_unlock_magnitude_amber_when_small(conn, settings) -> None:
+    """B5: a small unlock within 30d (but not <=7d) -> amber, not red."""
+    settings.asset_meta["SUI"] = {**settings.asset_meta.get("SUI", {}),
+                                  "next_unlock": _in_days(25), "unlock_pct": 2}  # 25d, 2% -> amber
+    df = thesis_invalidation_table(conn, settings)
+    sui = df[df["symbol"] == "SUI"].iloc[0]
+    assert sui["status"] == "amber"
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

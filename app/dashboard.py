@@ -44,6 +44,7 @@ from transform.indicators import (  # noqa: E402
     coinbase_premium_summary,
     dca_status,
     dca_vs_baseline_table,
+    drift_vs_target,
     dvol_summary,
     earn_rewards_summary,
     execution_summary,
@@ -573,13 +574,17 @@ def _color_rally(cell: object) -> str:
     return ""
 
 
-def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, int]]:
-    """Return [(symbol, date, days_until)] for configured next_unlock within the window.
+def _upcoming_unlocks(
+    settings, within_days: int = 30
+) -> list[tuple[str, str, int, float | None]]:
+    """Return [(symbol, date, days_until, pct)] for configured next_unlock within the window.
 
-    Reads config/assets_meta.yaml (manual dates, sección 5). Empty until dates are filled in.
+    Reads config/assets_meta.yaml (manual, sección 5). ``pct`` = % del circulante que se
+    desbloquea (``unlock_pct``, B5) — la magnitud, no solo la fecha; None si no está puesta.
+    Empty until dates are filled in.
     """
     today = datetime.now(timezone.utc).date()
-    out: list[tuple[str, str, int]] = []
+    out: list[tuple[str, str, int, float | None]] = []
     for symbol, meta in settings.asset_meta.items():
         raw = meta.get("next_unlock") if isinstance(meta, dict) else None
         if not raw:
@@ -590,7 +595,8 @@ def _upcoming_unlocks(settings, within_days: int = 30) -> list[tuple[str, str, i
             continue
         days = (date - today).days
         if 0 <= days <= within_days:
-            out.append((symbol, str(raw), days))
+            pct = meta.get("unlock_pct") if isinstance(meta, dict) else None
+            out.append((symbol, str(raw), days, pct if isinstance(pct, (int, float)) else None))
     return sorted(out, key=lambda item: item[2])
 
 
@@ -613,8 +619,9 @@ def _events_strip(conn, settings) -> None:
         days = (d - today).days
         if 0 <= days <= 7:
             items.append((days, str(raw), ":material/account_balance:", "FOMC", "decisión de tipos"))
-    for sym, date, days in _upcoming_unlocks(settings, within_days=7):
-        items.append((days, date, ":material/lock_open:", f"Unlock {sym}", "desbloqueo de tokens"))
+    for sym, date, days, pct in _upcoming_unlocks(settings, within_days=7):
+        note = "desbloqueo de tokens" + (f" · {pct:.0f}% circ." if pct is not None else "")
+        items.append((days, date, ":material/lock_open:", f"Unlock {sym}", note))
 
     st.subheader("Próximos 7 días", anchor="eventos")
     if not items:
@@ -802,12 +809,19 @@ def _section_market_structure(conn, settings) -> None:
     if unlocks:
         st.write(
             "**Próximos unlocks (≤30 d):** "
-            + " · ".join(f"{sym} {date} ({days} d)" for sym, date, days in unlocks)
+            + " · ".join(
+                f"{sym} {date} ({days} d{f', {pct:.0f}% circ.' if pct is not None else ''})"
+                for sym, date, days, pct in unlocks
+            )
+        )
+        st.caption(
+            "La **magnitud** (`unlock_pct`, % del circulante) manda tanto como la fecha: un unlock "
+            "grande y próximo se marca en **rojo** en el tablero de invalidación (sección 5)."
         )
     else:
         st.caption(
-            "Próximos unlocks: ninguno configurado. Añade `next_unlock: \"YYYY-MM-DD\"` por "
-            "token en `config/assets_meta.yaml` (sección 5: revisar siempre, sin excepción)."
+            "Próximos unlocks: ninguno configurado. Añade `next_unlock: \"YYYY-MM-DD\"` y "
+            "`unlock_pct: <%>` por token en `config/assets_meta.yaml` (sección 5: revisar siempre)."
         )
 
 
@@ -1218,6 +1232,9 @@ def _section_execution(conn, settings) -> None:
     # --- PnL per token + hold-simulation history -----------------------------
     _wallet_pnl_view(conn, settings, holdings)
 
+    # --- Drift vs. objetivo (B4) ---------------------------------------------
+    _drift_view(conn, settings, holdings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -1239,6 +1256,46 @@ def _section_execution(conn, settings) -> None:
         )
 
     _dca_baseline_view(conn, settings)
+
+
+def _drift_view(conn, settings, holdings) -> None:
+    """B4: allocation drift by tier vs. §5 targets + rebalance-by-contribution hint (level 4)."""
+    df = drift_vs_target(conn, settings, holdings)
+    if df.empty:
+        return
+    st.subheader("Drift vs. objetivo (asignación por tramo)")
+    band = settings.raw.get("portfolio", {}).get("drift_band_pp", 5)
+    rows = [
+        {
+            "Tramo": r["tier_label"],
+            "Actual": f"{r['current_pct']:.1f}%",
+            "Objetivo": f"{r['target_pct']:.0f}%",
+            "Drift": f"{r['drift_pp']:+.1f} pp{' ⚠' if r['over_band'] else ''}",
+            "Valor": _fmt_usd(r["value_usd"]),
+        }
+        for r in df.to_dict("records")
+    ]
+    show = pd.DataFrame(rows)
+    st.dataframe(
+        show.style.map(_color_dilution, subset=["Drift"]),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Drift": st.column_config.TextColumn(
+                help=f"Actual − objetivo (pp). ⚠ = fuera de la banda de ±{band} pp."
+            )
+        },
+    )
+    most = df.attrs.get("most_underweight")
+    cash = df.attrs.get("cash_usd", 0.0)
+    if most:
+        label = df.loc[df["tier"] == most, "tier_label"].iloc[0]
+        st.caption(
+            "**Rebalanceo por aportación:** el aporte de este mes va al tramo más infra-ponderado "
+            f"→ **{label}**. Rebalancea **añadiendo** al tramo bajo, no vendiendo (evita comisiones "
+            f"e impuestos, sección 4). Efectivo disponible: {_fmt_usd(cash)}. Los activos fuera de "
+            "la sección 5 (p. ej. WBETH) aparecen como *Sin tramo*."
+        )
 
 
 def _wallet_pnl_view(conn, settings, holdings) -> None:

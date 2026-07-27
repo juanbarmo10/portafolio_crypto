@@ -135,6 +135,14 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
   (si niveles 1-2 en rojo, no comprar) y es deliberadamente **transparente** (desglose por señal) y
   **anti-overfitting**: pocos componentes, pesos fijos, sin optimizar sobre el histórico (§4). Es un
   estado semanal que **bloquea** malas decisiones, no un gatillo de operación.
+- **Drift vs. objetivo** — peso actual por tramo (sobre capital **invertido**, sin efectivo) vs. los
+  pesos objetivo de §5 (en config). El drift en puntos porcentuales identifica el tramo más
+  infra-ponderado → **rebalanceo por aportación** (añadir al tramo bajo, no vender: evita comisiones
+  e impuestos). Los activos fuera de §5 se clasifican vía `symbol_aliases` (WBETH → ETH, núcleo)
+  manteniendo su propio precio; los no clasificables caen en "Sin tramo", honesto.
+- **Magnitud del unlock** — no solo la fecha: `unlock_pct` (% del circulante que se libera) entra en
+  el tablero de invalidación — un unlock **grande y próximo** (≥ umbral dentro de 30 d) se marca en
+  rojo, no solo por inminencia (§5: "unlock > 5% del circulante" es la regla accionable).
 
 ## 6. Trampas del dominio que el diseño evita
 

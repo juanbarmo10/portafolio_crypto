@@ -497,18 +497,21 @@ def test_drift_vs_target_asset(conn, settings) -> None:
     """G5-b: per-asset drift over total capital incl. cash; WBETH merged into ETH."""
     holdings = pd.DataFrame(
         [
-            {"asset": "BTC", "value_usd": 500.0, "is_cash": False},   # target 25 -> 50% (+25)
-            {"asset": "WBETH", "value_usd": 100.0, "is_cash": False},  # -> ETH target 15 -> 10% (-5)
-            {"asset": "USDT", "value_usd": 400.0, "is_cash": True},    # CASH target 5 -> 40%
+            {"asset": "BTC", "value_usd": 500.0, "is_cash": False},    # 50% of total
+            {"asset": "WBETH", "value_usd": 100.0, "is_cash": False},  # -> ETH -> 10%
+            {"asset": "USDT", "value_usd": 400.0, "is_cash": True},    # CASH -> 40%
         ]
     )
     d = drift_vs_target_asset(conn, settings, holdings)
     by = {r["asset"]: r for r in d.to_dict("records")}
+    # Assert against the configured targets so this doesn't break when the weights are retuned.
+    tw = settings.raw["portfolio"]["target_weights_asset"]
     assert d.attrs["total_usd"] == pytest.approx(1000.0)
-    assert by["BTC"]["current_pct"] == pytest.approx(50.0) and by["BTC"]["target_pct"] == 25.0
-    assert by["ETH"]["current_pct"] == pytest.approx(10.0)   # WBETH classified as ETH
+    assert by["BTC"]["current_pct"] == pytest.approx(50.0)
+    assert by["BTC"]["drift_pp"] == pytest.approx(50.0 - tw["BTC"])   # drift = current − target
+    assert by["ETH"]["current_pct"] == pytest.approx(10.0)            # WBETH classified as ETH
     assert by["CASH"]["current_pct"] == pytest.approx(40.0)
-    assert d.attrs["most_underweight"] in {"AAVE", "UNI", "SOL"}  # 0% held vs 10% target
+    assert d.attrs["most_underweight"] in {"AAVE", "UNI", "SOL"}      # 0% held vs their targets
 
 
 def test_dca_allocator_allocates_to_underweight(conn, settings) -> None:

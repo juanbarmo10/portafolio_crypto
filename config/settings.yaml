@@ -385,11 +385,11 @@ portfolio:
   drift_band_pp: 5   # marca ⚠ cuando |actual − objetivo| supera esto (puntos porcentuales)
   # Objetivo por ACTIVO (Parte G, G5.1) — % sobre el capital TOTAL, stables (CASH) incluidos.
   # Base del asignador del DCA (drift_vs_target_asset + dca_allocator). Suman 100.
-  # ⚠️ El reparto BTC/ETH (25/15) lo decides tú (G6.1); ajústalo aquí. CASH = munición para
+  # ⚠️ El reparto BTC/ETH (30/10, tu decisión de G6.1); ajústalo aquí. CASH = munición para
   # el rebalanceo por bandas (§ G6.4 #6). Los activos fuera de esta lista no reciben aporte.
   target_weights_asset:
-    BTC: 25.0
-    ETH: 15.0
+    BTC: 30.0
+    ETH: 10.0
     XRP: 5.0
     AAVE: 10.0
     UNI: 10.0

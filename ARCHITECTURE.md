@@ -186,3 +186,14 @@ Todos los indicadores son funciones puras y testeadas. Los más relevantes:
 - **PnL realizado (FIFO)** además del no realizado: cada venta se empareja con los lotes de compra
   más antiguos (first-in, first-out); una venta sin lote de compra en `trades` queda "sin emparejar"
   en vez de recibir un coste ficticio.
+- **Asignador del DCA (lista de compra mensual)** — decide *a qué activo* va el aporte con **drift
+  por activo** (rebalanceo por aportación hacia `target_weights_asset`), **no** con una batería de
+  osciladores: RSI/z-score/momentum miden casi lo mismo (Spearman 0.87-0.93) y ~15 parámetros sobre
+  ~12 decisiones/año garantizan sobreajuste (§4). El drift **no tiene parámetro que calibrar** —
+  compra el infra-ponderado por construcción — y un **veto** (tablero de invalidación) lo excluye de
+  promediar a la baja sobre una tesis muerta. **Fuentes separadas (§9):** el asignador y su backtest
+  usan precio **Binance** (`<SYMBOL>:spot_close:binance`, años de historia y donde ejecutas); el panel
+  usa CoinGecko. **Backtest** (108 meses, point-in-time, con universo dinámico para no favorecer a los
+  pickers de un solo activo): sobre un aporte mensual idéntico, el drift batió al reparto fijo, al RSI
+  y al momentum — evidencia de que la regla más simple gana. El *tilt* de cheapness (capa 4) **no se
+  construyó**: el backtest no lo justifica.

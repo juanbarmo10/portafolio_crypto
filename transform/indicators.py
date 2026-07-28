@@ -1679,6 +1679,65 @@ def drift_vs_target(
     return df
 
 
+def drift_vs_target_asset(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """G5-b: per-ASSET drift vs. ``target_weights_asset``, over TOTAL capital (cash included).
+
+    The per-asset twin of :func:`drift_vs_target` (which is per-tramo). Weights are over the
+    whole portfolio **including cash** — cash ("CASH") is a target position, the rebalancing
+    ammunition (§ Parte G). Held symbols are alias-merged (WBETH→ETH). ``drift_pp`` = current −
+    target; the most-negative among **targeted, non-cash** assets is where the contribution goes.
+
+    Returns [asset, value_usd, current_pct, target_pct, drift_pp, over_band] sorted by target
+    descending; attrs total_usd, most_underweight (asset key or None).
+    """
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
+    cfg = settings.raw.get("portfolio", {})
+    targets = cfg.get("target_weights_asset", {}) or {}
+    band = float(cfg.get("drift_band_pp", 5))
+    cols = ["asset", "value_usd", "current_pct", "target_pct", "drift_pp", "over_band"]
+    aliases = settings.source("binance_account").get("symbol_aliases", {}) or {}
+
+    by_asset: dict[str, float] = {}
+    for r in ([] if holdings.empty else holdings.to_dict("records")):
+        val = r["value_usd"]
+        if val is None or pd.isna(val):
+            continue
+        key = "CASH" if r["is_cash"] else aliases.get(r["asset"], r["asset"])
+        by_asset[key] = by_asset.get(key, 0.0) + float(val)
+    total = sum(by_asset.values())
+    if total <= 0:
+        df = pd.DataFrame(columns=cols)
+        df.attrs.update(total_usd=0.0, most_underweight=None)
+        return df
+
+    assets = list(dict.fromkeys(list(targets.keys()) + list(by_asset.keys())))
+    rows: list[dict[str, Any]] = []
+    for a in assets:
+        cur = by_asset.get(a, 0.0)
+        cur_w = cur / total * 100.0
+        tgt_w = float(targets.get(a, 0.0))
+        drift = cur_w - tgt_w
+        rows.append(
+            {
+                "asset": a,
+                "value_usd": cur,
+                "current_pct": cur_w,
+                "target_pct": tgt_w,
+                "drift_pp": drift,
+                "over_band": abs(drift) > band,
+            }
+        )
+    df = pd.DataFrame(rows, columns=cols)
+    cand = df[(df["target_pct"] > 0) & (df["asset"] != "CASH")]
+    most = str(cand.sort_values("drift_pp").iloc[0]["asset"]) if not cand.empty else None
+    df = df.sort_values("target_pct", ascending=False).reset_index(drop=True)
+    df.attrs.update(total_usd=float(total), most_underweight=most)
+    return df
+
+
 def monthly_contribution_advice(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -1748,4 +1807,107 @@ def monthly_contribution_advice(
         "blocking_events": blocking,
         "target_tier": target_tier,
         "target_tier_label": target_label,
+    }
+
+
+def dca_allocator(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    contribution_usd: float | None = None,
+    holdings: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """G5-d: the month's **shopping list** — composes layers 1-3 of the DCA allocator (§ Parte G).
+
+    Given the contribution you already decided to make, it says **how much goes to each asset** —
+    it is not a signal generator ("compra ahora"). Layers:
+      1. **Régimen + eventos** (:func:`monthly_contribution_advice`) → execute / postpone.
+      2. **Per-asset drift** (:func:`drift_vs_target_asset`) → rebalance by contribution toward
+         ``target_weights_asset``, prioritizing the most under-weighted (buys the one that fell,
+         by construction — no parameter to tune).
+      3. **Invalidation veto** (:func:`thesis_invalidation_table`) → assets in **red** are excluded
+         and their share redistributed (avoids averaging down into a dead thesis — the value trap).
+    Excess cash over the CASH target is also deployed (dry powder). **Layer 4 (cheapness tilt) is
+    NOT applied** — gated behind the backtest (G5-c/G4). Allocation: ``need_i = max(0, target_value
+    − current_value)`` filled proportionally by the deployable budget (contribution + excess cash),
+    capped at need so it never overshoots.
+
+    Returns {has_data, recommendation, reason, regime_label, blocking_events, postpone_days,
+    contribution_usd, deployable_usd, total_allocated_usd, cash_now_usd, cash_target_usd,
+    target_asset, items: [{asset, usd, target_pct, current_pct, drift_pp, vetoed, veto_reason}]}.
+    """
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
+    contribution = float(
+        contribution_usd
+        if contribution_usd is not None
+        else settings.raw.get("dca", {}).get("monthly_contribution_min_usd", 200)
+    )
+    targets = settings.raw.get("portfolio", {}).get("target_weights_asset", {}) or {}
+
+    drift = drift_vs_target_asset(conn, settings, holdings)
+    if drift.empty or not targets:
+        return {"has_data": False}
+    total = float(drift.attrs["total_usd"])
+    val_by_asset = {r["asset"]: r["value_usd"] for r in drift.to_dict("records")}
+    curpct = {r["asset"]: r["current_pct"] for r in drift.to_dict("records")}
+    drift_by_asset = {r["asset"]: r["drift_pp"] for r in drift.to_dict("records")}
+
+    # Layer 3 veto: assets whose thesis is invalidated (red) are excluded.
+    inval = {
+        r["symbol"]: (r["status"], r["reason"])
+        for r in thesis_invalidation_table(conn, settings).to_dict("records")
+    }
+
+    def _veto(asset: str) -> tuple[bool, str | None]:
+        status, reason = inval.get(asset, (None, None))
+        return (status == "red"), (reason if status == "red" else None)
+
+    new_total = total + contribution
+    cash_target = float(targets.get("CASH", 0.0)) / 100.0 * new_total
+    cash_now = val_by_asset.get("CASH", 0.0)
+    deployable = contribution + max(0.0, cash_now - cash_target)  # new money + excess dry powder
+
+    needs: dict[str, float] = {}
+    for asset, tgt in targets.items():
+        if asset == "CASH" or _veto(asset)[0]:
+            continue
+        target_value = float(tgt) / 100.0 * new_total
+        needs[asset] = max(0.0, target_value - val_by_asset.get(asset, 0.0))
+    total_need = sum(needs.values())
+    scale = min(1.0, deployable / total_need) if total_need > 0 else 0.0
+
+    items: list[dict[str, Any]] = []
+    for asset, tgt in targets.items():
+        if asset == "CASH":
+            continue
+        vetoed, vreason = _veto(asset)
+        ticket = 0.0 if vetoed else needs.get(asset, 0.0) * scale
+        items.append(
+            {
+                "asset": asset,
+                "usd": ticket,
+                "target_pct": float(tgt),
+                "current_pct": curpct.get(asset, 0.0),
+                "drift_pp": drift_by_asset.get(asset),
+                "vetoed": vetoed,
+                "veto_reason": vreason,
+            }
+        )
+    items.sort(key=lambda i: i["usd"], reverse=True)
+
+    advice = monthly_contribution_advice(conn, settings, holdings=holdings)
+    return {
+        "has_data": True,
+        "recommendation": advice.get("recommendation"),
+        "reason": "; ".join(advice.get("reasons", [])),
+        "regime_label": advice.get("regime_label"),
+        "blocking_events": advice.get("blocking_events", []),
+        "postpone_days": advice.get("postpone_days"),
+        "contribution_usd": contribution,
+        "deployable_usd": deployable,
+        "total_allocated_usd": float(sum(i["usd"] for i in items)),
+        "cash_now_usd": cash_now,
+        "cash_target_usd": cash_target,
+        "target_asset": drift.attrs.get("most_underweight"),
+        "items": items,
     }

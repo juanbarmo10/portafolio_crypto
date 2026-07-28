@@ -74,7 +74,8 @@ Incluye hasta ahora:
   activo sea perfecta) y recomienda **posponer** el aporte mensual en rojo. Pesos iguales fijos y
   umbrales en `config` — pocos componentes, sin optimizar sobre el histórico (anti-overfitting).
 - **Drift vs. objetivo + magnitud de unlock (Parte B, B4/B5):** en Ejecución, **peso actual por
-  tramo vs. objetivo** (Núcleo 55 / Satélite 10 / Riesgo medio 20 / Riesgo alto 15, en `config`) con
+  tramo vs. objetivo** (por defecto, cartera objetivo de Parte G: Núcleo 40 / Satélite 5 / Riesgo
+  medio 37.5 / Riesgo alto 12.5 — todo en `config`) con
   banda de drift y **rebalanceo por aportación** (el aporte del mes va al tramo más infra-ponderado,
   añadiendo en vez de vender). WBETH se clasifica como ETH (núcleo) manteniendo su propio precio. Y
   el tablero de invalidación usa la **magnitud** del unlock (`unlock_pct`, % del circulante), no solo
@@ -101,6 +102,16 @@ Incluye hasta ahora:
   realizado (FIFO)** además del no realizado (empareja cada venta con los lotes de compra más
   antiguos); **calendario FOMC 2026** cableado (alimenta el strip de eventos, el régimen y el
   ayudante de aporte). El coste de las comisiones ya se valoraba al precio de su fecha.
+- **Asignador del DCA — lista de compra mensual (Parte G):** responde *¿a qué token va el aporte?*
+  con **drift por activo** (compra el infra-ponderado, por construcción — sin un parámetro que
+  calibrar), no con RSI/MACD/cruce dorado. Compone: régimen + eventos (*cuánto/cuándo*) → drift por
+  activo hacia `target_weights_asset` (*a quién*) → **veto** del tablero de invalidación (excluye
+  tesis rotas, evita la trampa de valor). Genera la **lista de la compra** del mes (activo · actual ·
+  objetivo · drift · veto · ticket USD) en la vista de aporte, con ejecución **manual** (key
+  read-only). Usa histórico **Binance** multi-año (`spot_prices --backfill`, años de velas diarias
+  gratis vs. los 365 d de CoinGecko). **Backtest honesto** (108 meses): el drift bate al reparto fijo
+  (P=1.00), al RSI (0.33) y al momentum (0.03) → combinar osciladores no aporta; el *tilt* de
+  cheapness queda **sin construir** hasta que un backtest lo justifique.
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -132,7 +143,7 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 181) de esquema, idempotencia, config (incl. override local), indicadores,
+- Tests (`pytest`, 185) de esquema, idempotencia, config (incl. override local), indicadores,
   rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
   accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
   neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings

@@ -262,8 +262,11 @@ assets:
       slug: aave
     verified: true
   - symbol: UNI
+    # Sube de 'observacion' a 'riesgo_medio' para la asignación objetivo del DCA (Parte G,
+    # G6.4 #3): cambio de postura consciente — su captura de valor depende de un fee switch
+    # aún atascado. Anotado como riesgo, no veto.
     coingecko_id: uniswap
-    tier: observacion
+    tier: riesgo_medio
     thesis_category: dex
     defillama:
       kind: protocol
@@ -372,12 +375,30 @@ dca:
 # drift vs. objetivo: rebalanceo por APORTACIÓN (añadir al tramo más infra-ponderado, no
 # vender — ahorra comisiones y es más limpio fiscalmente). Suman 100.
 portfolio:
+  # Objetivo por TRAMO (vista B4). Actualizado a la cartera objetivo de 9 activos (Parte G):
+  # más agresiva que §5 (núcleo 55→40). Consistente con target_weights_asset de abajo.
   target_weights:
-    nucleo: 55
-    satelite: 10
-    riesgo_medio: 20
-    riesgo_alto: 15
+    nucleo: 40
+    satelite: 5
+    riesgo_medio: 37.5   # SOL 10 + LINK 7.5 + AAVE 10 + UNI 10
+    riesgo_alto: 12.5    # ONDO 7.5 + TAO 5
   drift_band_pp: 5   # marca ⚠ cuando |actual − objetivo| supera esto (puntos porcentuales)
+  # Objetivo por ACTIVO (Parte G, G5.1) — % sobre el capital TOTAL, stables (CASH) incluidos.
+  # Base del asignador del DCA (drift_vs_target_asset + dca_allocator). Suman 100.
+  # ⚠️ El reparto BTC/ETH (25/15) lo decides tú (G6.1); ajústalo aquí. CASH = munición para
+  # el rebalanceo por bandas (§ G6.4 #6). Los activos fuera de esta lista no reciben aporte.
+  target_weights_asset:
+    BTC: 25.0
+    ETH: 15.0
+    XRP: 5.0
+    AAVE: 10.0
+    UNI: 10.0
+    LINK: 7.5
+    SOL: 10.0
+    ONDO: 7.5
+    TAO: 5.0
+    CASH: 5.0
+  tilt_cap_pct: 25   # tope duro del tilt de cheapness (capa 4, G5-c) — desactivado hasta validar
 
 # --- Alerts (CLAUDE.md section 8, phase 3) -----------------------------------
 # Declarative rules evaluated against the DB after ingest; only actionable, pre-written

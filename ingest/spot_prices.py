@@ -39,6 +39,7 @@ class SpotPricesIngester(Ingester):
     source = "spot_prices"
 
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         cfg = settings.source("spot_prices")
         self._exchange_ids: list[str] = cfg.get("exchanges", ["coinbase", "binance"])
         self._assets: list[str] = cfg.get("assets", ["BTC", "ETH"])
@@ -46,6 +47,7 @@ class SpotPricesIngester(Ingester):
             "quotes", {"coinbase": "USD", "binance": "USDT"}
         )
         self._history_days = int(cfg.get("history_days", 30))
+        self._history_since = cfg.get("history_since", "2017-01-01T00:00:00Z")
         self._timeout = int(cfg.get("request_timeout_ms", 20000))
 
     def _make_exchange(self, exchange_id: str) -> ccxt.Exchange:
@@ -103,3 +105,56 @@ class SpotPricesIngester(Ingester):
             log.info("spot_prices: %s done (%d rows so far).", exchange_id, len(rows))
         df = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
         return self.validate(df)
+
+    def fetch_history(self, days: int | None = None) -> pd.DataFrame:
+        """Parte G (G5-a): full multi-year daily close history from **Binance** for all tracked assets.
+
+        Binance gives years of free daily OHLCV (vs. CoinGecko's 365-day cap) with no key — the
+        history the DCA allocator's cheapness z-score (200 d) and backtest need. Stores
+        ``<SYMBOL>:spot_close:binance``. Paginated (Binance caps ~1000 candles/call); idempotent
+        upsert dedupes overlaps. §9: this is a **separate** series from ``<cid>:price`` (CoinGecko)
+        — the allocator/backtest use Binance (more history, and where you actually execute); the
+        panel keeps CoinGecko. Invoked via ``run_ingest.py --backfill``.
+        """
+        try:
+            exchange = retry(lambda: self._make_exchange("binance"), exceptions=(ccxt.NetworkError,))
+        except Exception:  # noqa: BLE001 — no Binance, no history; skip cleanly
+            log.exception("spot_prices history: could not initialize Binance")
+            return self.validate(pd.DataFrame(columns=OBSERVATION_COLUMNS))
+
+        quote = self._quotes.get("binance", "USDT")
+        symbols = [a["symbol"] for a in self._settings.assets]
+        since_floor = exchange.parse8601(self._history_since)
+        now_ms = exchange.milliseconds()
+        rows: list[dict[str, Any]] = []
+        for symbol in symbols:
+            market = f"{symbol}/{quote}"
+            if market not in exchange.markets:
+                continue
+            since = since_floor
+            count = 0
+            while since < now_ms:
+                candles = retry(
+                    lambda m=market, s=since: exchange.fetch_ohlcv(m, "1d", since=s, limit=1000),
+                    exceptions=(ccxt.NetworkError,),
+                )
+                if not candles:
+                    break
+                for ts, _o, _h, _low, close, _v in candles:
+                    if close is not None and ts is not None:
+                        rows.append(
+                            {
+                                "source": self.source,
+                                "series_id": f"{symbol}:spot_close:binance",
+                                "ts": _ms_to_iso_day(ts),
+                                "ts_release": None,
+                                "value": float(close),
+                            }
+                        )
+                count += len(candles)
+                last = candles[-1][0]
+                if last < since + 86_400_000:  # no forward progress -> stop (guards against a loop)
+                    break
+                since = last + 86_400_000
+            log.info("spot_prices history: %s -> %d daily candles.", symbol, count)
+        return self.validate(pd.DataFrame(rows, columns=OBSERVATION_COLUMNS))

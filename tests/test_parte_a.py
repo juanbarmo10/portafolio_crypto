@@ -34,7 +34,9 @@ from transform.indicators import (
     _vote,
     behavioral_scorecard,
     coinbase_premium_summary,
+    dca_allocator,
     drift_vs_target,
+    drift_vs_target_asset,
     fed_net_liquidity_series,
     monthly_contribution_advice,
     realized_pnl_fifo,
@@ -309,13 +311,14 @@ def test_regime_scoreboard_neutral(conn, settings) -> None:
 
 def test_drift_vs_target(conn, settings) -> None:
     """B4: allocation drift by tier vs. §5 targets; cash excluded; most-underweight found."""
+    # Targets (Parte G): nucleo 40 · satelite 5 · riesgo_medio 37.5 · riesgo_alto 12.5.
     holdings = pd.DataFrame(
         [
-            {"asset": "BTC", "value_usd": 550.0, "is_cash": False},  # nucleo (target 55)
+            {"asset": "BTC", "value_usd": 550.0, "is_cash": False},  # nucleo
             {"asset": "ETH", "value_usd": 100.0, "is_cash": False},  # nucleo -> 650 = 65%
-            {"asset": "XRP", "value_usd": 100.0, "is_cash": False},  # satelite (10) -> 10%
-            {"asset": "SOL", "value_usd": 100.0, "is_cash": False},  # riesgo_medio (20) -> 10%
-            {"asset": "TAO", "value_usd": 150.0, "is_cash": False},  # riesgo_alto (15) -> 15%
+            {"asset": "XRP", "value_usd": 100.0, "is_cash": False},  # satelite -> 10%
+            {"asset": "SOL", "value_usd": 100.0, "is_cash": False},  # riesgo_medio -> 10%
+            {"asset": "TAO", "value_usd": 150.0, "is_cash": False},  # riesgo_alto -> 15%
             {"asset": "USDT", "value_usd": 200.0, "is_cash": True},  # cash: excluded from weights
             {"asset": "GUN", "value_usd": float("nan"), "is_cash": False},  # unpriceable -> skipped
         ]
@@ -324,9 +327,9 @@ def test_drift_vs_target(conn, settings) -> None:
     by_tier = {r["tier"]: r for r in df.to_dict("records")}
     assert df.attrs["invested_usd"] == 1000.0 and df.attrs["cash_usd"] == 200.0
     assert by_tier["nucleo"]["current_pct"] == pytest.approx(65.0)
-    assert by_tier["nucleo"]["drift_pp"] == pytest.approx(10.0) and by_tier["nucleo"]["over_band"]
-    assert by_tier["riesgo_medio"]["drift_pp"] == pytest.approx(-10.0)
-    assert by_tier["satelite"]["drift_pp"] == pytest.approx(0.0) and not by_tier["satelite"]["over_band"]
+    assert by_tier["nucleo"]["drift_pp"] == pytest.approx(25.0) and by_tier["nucleo"]["over_band"]
+    assert by_tier["riesgo_medio"]["drift_pp"] == pytest.approx(-27.5)
+    assert by_tier["satelite"]["drift_pp"] == pytest.approx(5.0)
     # Contribution should go to the most-underweight tier with a positive target.
     assert df.attrs["most_underweight"] == "riesgo_medio"
 
@@ -409,7 +412,7 @@ def test_advice_execute_and_target_tier(conn, settings) -> None:
     )
     a = monthly_contribution_advice(conn, settings, holdings=holdings)
     assert a["recommendation"] == "execute"           # empty DB -> régimen n/a, no events
-    assert a["target_tier"] == "riesgo_alto"           # 0% held, target 15 -> most underweight
+    assert a["target_tier"] == "riesgo_medio"          # 10% held vs 37.5% target -> most underweight
     assert not a["blocking_events"]
 
 
@@ -488,6 +491,72 @@ def test_notify_ingest_failures_dryrun(settings) -> None:
     settings.secrets.pop("TELEGRAM_TOKEN", None)
     settings.secrets.pop("TELEGRAM_CHAT_ID", None)
     assert notify_ingest_failures(settings, ["EtfFlowsIngester"]) is False
+
+
+def test_drift_vs_target_asset(conn, settings) -> None:
+    """G5-b: per-asset drift over total capital incl. cash; WBETH merged into ETH."""
+    holdings = pd.DataFrame(
+        [
+            {"asset": "BTC", "value_usd": 500.0, "is_cash": False},   # target 25 -> 50% (+25)
+            {"asset": "WBETH", "value_usd": 100.0, "is_cash": False},  # -> ETH target 15 -> 10% (-5)
+            {"asset": "USDT", "value_usd": 400.0, "is_cash": True},    # CASH target 5 -> 40%
+        ]
+    )
+    d = drift_vs_target_asset(conn, settings, holdings)
+    by = {r["asset"]: r for r in d.to_dict("records")}
+    assert d.attrs["total_usd"] == pytest.approx(1000.0)
+    assert by["BTC"]["current_pct"] == pytest.approx(50.0) and by["BTC"]["target_pct"] == 25.0
+    assert by["ETH"]["current_pct"] == pytest.approx(10.0)   # WBETH classified as ETH
+    assert by["CASH"]["current_pct"] == pytest.approx(40.0)
+    assert d.attrs["most_underweight"] in {"AAVE", "UNI", "SOL"}  # 0% held vs 10% target
+
+
+def test_dca_allocator_allocates_to_underweight(conn, settings) -> None:
+    """G5-d: overweight asset gets $0; the budget fills the under-weighted ones (drift)."""
+    holdings = pd.DataFrame(
+        [
+            {"asset": "BTC", "value_usd": 900.0, "is_cash": False},  # overweight (target 25)
+            {"asset": "USDT", "value_usd": 100.0, "is_cash": True},
+        ]
+    )
+    a = dca_allocator(conn, settings, contribution_usd=200.0, holdings=holdings)
+    tickets = {i["asset"]: i["usd"] for i in a["items"]}
+    assert tickets["BTC"] == pytest.approx(0.0)                       # overweight -> nothing
+    assert a["total_allocated_usd"] > 0                              # money flows to the empties
+    assert a["total_allocated_usd"] <= a["deployable_usd"] + 1e-6    # never overshoots the budget
+
+
+def test_dca_allocator_veto_excludes_red_asset(conn, settings) -> None:
+    """G5-d layer 3: an invalidated (red) asset is vetoed -> $0, its share redistributed."""
+    settings.asset_meta["TAO"] = {
+        **settings.asset_meta.get("TAO", {}), "next_unlock": _in_days(3), "unlock_pct": 10,
+    }  # near + large unlock -> red
+    holdings = pd.DataFrame([{"asset": "USDT", "value_usd": 1000.0, "is_cash": True}])
+    a = dca_allocator(conn, settings, contribution_usd=200.0, holdings=holdings)
+    tao = next(i for i in a["items"] if i["asset"] == "TAO")
+    assert tao["vetoed"] is True and tao["usd"] == pytest.approx(0.0)
+    assert a["total_allocated_usd"] > 0  # the rest still receives the budget
+
+
+def test_dca_allocator_backtest(conn, settings) -> None:
+    """G5-e: RSI helper is sane; backtest runs the 4 strategies over seeded Binance history."""
+    from validation.backtest import _rsi, dca_allocator_backtest
+
+    up = pd.Series(range(1, 40), index=pd.date_range("2026-01-01", periods=39, freq="D"))
+    assert _rsi(up).dropna().iloc[-1] > 70  # monotonic rise -> high RSI
+
+    assert dca_allocator_backtest(conn, settings, min_history_days=10).get("has_data") is False
+
+    days = pd.date_range("2026-01-01", periods=40, freq="D", tz="UTC")
+    rows = []
+    for i, dt in enumerate(days):
+        ts = dt.strftime("%Y-%m-%dT00:00:00+00:00")
+        rows.append(_obs("BTC:spot_close:binance", ts, 100.0 + i, "spot_prices"))
+        rows.append(_obs("ETH:spot_close:binance", ts, 50.0 + i * 0.5, "spot_prices"))
+    upsert_observations(conn, pd.DataFrame(rows))
+    r = dca_allocator_backtest(conn, settings, contribution=100.0, min_history_days=10, bootstrap=5)
+    assert r["has_data"] is True
+    assert {"A_fixed", "B_drift", "D_rsi", "E_momentum"} <= set(r["point_return_pct"])
 
 
 def test_parte_a_series_are_idempotent(conn, settings) -> None:

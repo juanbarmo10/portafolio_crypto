@@ -43,6 +43,7 @@ from transform.indicators import (  # noqa: E402
     btc_onchain_summary,
     capital_deployed_summary,
     coinbase_premium_summary,
+    dca_allocator,
     dca_status,
     dca_vs_baseline_table,
     drift_vs_target,
@@ -1253,6 +1254,9 @@ def _section_execution(conn, settings) -> None:
     # --- ¿Despliego el aporte de este mes? (B7) ------------------------------
     _contribution_advice_view(conn, settings, holdings)
 
+    # --- Lista de compra del mes (Parte G — asignador del DCA) ----------------
+    _dca_shopping_list_view(conn, settings, holdings)
+
     # --- DCA plan (manual) ---------------------------------------------------
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
@@ -1414,6 +1418,77 @@ def _risk_view(conn, settings, holdings) -> None:
         f"Riesgo sobre precios propios (backfill); ventana de {summary['window_days']} d. "
         "Diversificación **real** = por modo de fallo, no por número de tickers (sección 5)."
     )
+
+
+def _drift_bar(records: list[dict], settings):
+    """Altair horizontal bar of per-asset drift (pp); under-weight (negative) in red."""
+    if not records:
+        return None
+    data = alt.Data(values=records)
+    return (
+        alt.Chart(data)
+        .mark_bar()
+        .encode(
+            x=alt.X("drift:Q", title="Drift vs. objetivo (pp)"),
+            y=alt.Y("asset:N", title=None, sort="-x"),
+            color=alt.condition(alt.datum.drift < 0, alt.value("#dc2626"), alt.value("#16a34a")),
+            tooltip=[alt.Tooltip("asset:N", title="Activo"), alt.Tooltip("drift:Q", title="Drift (pp)")],
+        )
+        .properties(height=min(40 + 24 * len(records), 320))
+    )
+
+
+def _dca_shopping_list_view(conn, settings, holdings) -> None:
+    """Parte G (G5-d/G5.3): the month's DCA shopping list from the allocator (level 4)."""
+    a = dca_allocator(conn, settings, holdings=holdings)
+    if not a.get("has_data"):
+        return
+    st.markdown("**Lista de compra del mes**")
+    rows = [
+        {
+            "Logo": settings.meta_for(i["asset"]).get("logo_url") or "",
+            "Activo": i["asset"],
+            "Actual": f"{i['current_pct']:.1f}%",
+            "Objetivo": f"{i['target_pct']:.1f}%",
+            "Drift": _fmt_pp(i["drift_pp"]) if i["drift_pp"] is not None else "—",
+            "Veto": "🚫" if i["vetoed"] else "",
+            "Ticket": _fmt_usd(i["usd"]),
+        }
+        for i in a["items"]
+    ]
+    show = pd.DataFrame(rows)
+    st.dataframe(
+        show.style.map(_color_by_sign, subset=["Drift"]),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Ticket": st.column_config.TextColumn(
+                help="Cuánto de tu aporte va a este activo: rebalanceo por bandas hacia el objetivo "
+                "(compra al infra-ponderado, por construcción). Los sobre-ponderados reciben $0."
+            ),
+            "Veto": st.column_config.TextColumn(
+                help="🚫 = tesis invalidada (tablero de invalidación en rojo): excluido del reparto, "
+                "su parte se redistribuye (evita promediar a la baja sobre una trampa de valor)."
+            ),
+        },
+    )
+    st.caption(
+        f"Total a desplegar: **{_fmt_usd(a['total_allocated_usd'])}** (aporte "
+        f"{_fmt_usd(a['contribution_usd'])} + exceso de caja: {_fmt_usd(a['cash_now_usd'])} → objetivo "
+        f"{_fmt_usd(a['cash_target_usd'])}). **Asignación por bandas de rebalanceo, no predicción de "
+        "precio** (Parte G). Te dice *dónde va el aporte que ya decidiste hacer*, no *cuándo comprar*; "
+        "ejecución **manual** (la key de Binance es de solo lectura). Capa 4 (tilt) desactivada hasta validar."
+    )
+    bars = _drift_bar(
+        [
+            {"asset": i["asset"], "drift": round(i["drift_pp"], 1) if i["drift_pp"] is not None else 0.0}
+            for i in a["items"]
+        ],
+        settings,
+    )
+    if bars is not None:
+        st.altair_chart(bars, width="stretch")
 
 
 _REGIME_ICON = {"risk_on": "🟢 risk-on", "neutral": "🟠 neutral", "risk_off": "🔴 risk-off"}

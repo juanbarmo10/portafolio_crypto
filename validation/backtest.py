@@ -20,7 +20,7 @@ import pandas as pd
 
 from core.config import Settings
 from db.queries import series_history
-from validation.metrics import bootstrap_mean_diff_pvalue, forward_return
+from validation.metrics import benjamini_hochberg, bootstrap_mean_diff_pvalue, forward_return
 
 
 def rolling_zscore(series: pd.Series, window_days: int) -> pd.Series:
@@ -77,6 +77,143 @@ def _first_series(conn: sqlite3.Connection, asset: str, kind: str, exchanges: li
         if not s.dropna().empty:
             return s
     return pd.Series(dtype="float64")
+
+
+# ---------------------------------------------------------------------------
+# C1 — Signal battery + FDR (Parte C): validate several level-1/2 signals at once
+# and control the false-discovery rate across them (§9 multiple testing). Honest about
+# which signals lack enough history to conclude.
+# ---------------------------------------------------------------------------
+
+
+def _rising_dates(driver: pd.Series, days: int) -> list[pd.Timestamp]:
+    """Dates where ``driver`` is higher than its value ~``days`` ago (point-in-time, as-of)."""
+    d = driver.dropna()
+    d = d[~d.index.duplicated(keep="last")]
+    dates: list[pd.Timestamp] = []
+    for t in d.index:
+        past = d.loc[d.index <= t - pd.Timedelta(days=days)]
+        if not past.empty and float(d.loc[t]) > float(past.iloc[-1]):
+            dates.append(t)
+    return dates
+
+
+def _episodes(dates: list[pd.Timestamp], min_gap_days: int) -> list[pd.Timestamp]:
+    """Thin dates so consecutive kept ones are >= ``min_gap_days`` apart.
+
+    A rising-regime signal fires on almost every day, so raw daily counts are wildly
+    autocorrelated and the permutation test overstates significance. Keeping one date per
+    ``horizon``-sized gap makes the forward-return windows non-overlapping and ``n`` an honest
+    count of near-independent episodes.
+    """
+    last: pd.Timestamp | None = None
+    kept: list[pd.Timestamp] = []
+    for d in sorted(dates):
+        if last is None or (d - last) >= pd.Timedelta(days=min_gap_days):
+            kept.append(d)
+            last = d
+    return kept
+
+
+def _battery_eval(
+    price: pd.Series, signal_dates: list[pd.Timestamp], horizon: int, min_signal: int
+) -> dict[str, Any]:
+    """Edge + p-value of one signal, on episode-thinned (non-overlapping) signal dates, with
+    the baseline restricted to the signal's active window (conditional vs. unconditional over
+    the *same* period, not vs. all of history)."""
+    price = price.dropna()
+    signal_dates = _episodes(signal_dates, horizon)  # non-overlapping forward windows
+    if price.empty or not signal_dates:
+        return {"status": "insufficient", "n_signal": 0, "n_baseline": 0, "edge": None, "pvalue": None}
+    lo, hi = min(signal_dates), max(signal_dates)
+    window = price.loc[(price.index >= lo) & (price.index <= hi + pd.Timedelta(days=horizon))]
+    ev = evaluate_signal(window, signal_dates, (horizon,))[horizon]
+    ok = ev["n_signal"] >= min_signal and ev["n_baseline"] >= 30 and ev["pvalue"] is not None
+    return {
+        "status": "ok" if ok else "insufficient",
+        "n_signal": ev["n_signal"],
+        "n_baseline": ev["n_baseline"],
+        "edge": ev["edge"],
+        "pvalue": ev["pvalue"],
+    }
+
+
+def signal_battery(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    horizon: int = 30,
+    fdr_alpha: float = 0.10,
+    min_signal: int = 8,
+) -> dict[str, Any]:
+    """C1: validate a family of level-1/2 signals at one horizon, with FDR control.
+
+    Each signal fires on point-in-time dates (§9: macro on ``ts_release``) and is scored by
+    the forward return of a price proxy vs. the unconditional baseline over the **same**
+    window (:func:`evaluate_signal`), giving an edge (pp) and a permutation p-value. Because
+    several signals are tested at once, Benjamini-Hochberg FDR (:func:`benjamini_hochberg`)
+    is applied across the ones with enough history; signals too short to conclude are flagged
+    ``insufficient`` and excluded from the correction (honesty over cherry-picking).
+
+    Prices use **Binance** spot close (§9, not CoinGecko). Returns ``{has_data, horizon,
+    fdr_alpha, n_tested, signals: [{name, hypothesis, direction, n_signal, edge, pvalue,
+    qvalue, significant, status}]}``.
+    """
+    from transform.indicators import fed_net_liquidity_series
+
+    btc = series_history(conn, "spot_prices", "BTC:spot_close:binance").dropna()
+    eth = series_history(conn, "spot_prices", "ETH:spot_close:binance").dropna()
+
+    signals: list[dict[str, Any]] = []
+
+    def add(name: str, hypothesis: str, direction: int, price: pd.Series,
+            signal_dates: list[pd.Timestamp]) -> None:
+        row = {"name": name, "hypothesis": hypothesis, "direction": direction,
+               "qvalue": None, "significant": None}
+        row.update(_battery_eval(price, signal_dates, horizon, min_signal))
+        signals.append(row)
+
+    # 1 — Net liquidity rising (A1), point-in-time via release dates → BTC up (risk-on).
+    nl = fed_net_liquidity_series(conn, settings, by_release=True)
+    add("Liquidez neta ↑", "liquidez neta subiendo → BTC ↑ (risk-on)", +1, btc,
+        _rising_dates(nl, 28))
+
+    # 2 — Aggregate stablecoin mcap rising (A7) → dry powder entering → BTC up.
+    stbl = series_history(conn, "defillama", "stablecoins:total_mcap")
+    add("Stablecoins ↑", "capital aparcado creciendo (dry powder) → BTC ↑", +1, btc,
+        _rising_dates(stbl, 28))
+
+    # 3 — BTC ETF net-inflow streak (trailing 5-day sum > 0) → BTC up.
+    etf = series_history(conn, "farside", "etf:btc:total").sort_index()
+    streak = etf.rolling(5).sum() if not etf.dropna().empty else pd.Series(dtype="float64")
+    add("Flujos ETF racha+", "entradas ETF sostenidas → BTC ↑", +1, btc,
+        list(streak.index[streak > 0]))
+
+    # 4 — ETH/BTC ratio rising (A9) → rotation persists (momentum in the ratio itself).
+    both = pd.concat({"eth": eth, "btc": btc}, axis=1, sort=False).sort_index().ffill().dropna()
+    ratio = (both["eth"] / both["btc"]).rename("ethbtc") if not both.empty else pd.Series(dtype="float64")
+    add("Rotación ETH/BTC ↑", "ETH/BTC subiendo → la rotación persiste", +1, ratio,
+        _rising_dates(ratio, 28))
+
+    # 5 — Crowded longs: high BTC funding z → weaker forward returns. Short history (~90 d)
+    # → usually flagged insufficient; kept so the battery is honest about what it can't judge.
+    exchanges = settings.source("derivatives").get("exchanges", ["binance", "bybit"])
+    funding = _first_series(conn, "BTC", "funding", exchanges)
+    z = rolling_zscore(funding, 90) if not funding.dropna().empty else pd.Series(dtype="float64")
+    add("Funding z alto (BTC)", "largos hacinados → BTC ↓ (frágil)", -1, btc,
+        list(z.index[z >= 1.5]))
+
+    # FDR across the signals with enough history; the rest stay 'insufficient'.
+    testable = [s for s in signals if s["status"] == "ok"]
+    for s, (q, rej) in zip(testable, benjamini_hochberg([s["pvalue"] for s in testable], fdr_alpha)):
+        s["qvalue"], s["significant"] = q, rej
+
+    return {
+        "has_data": any(s["status"] == "ok" for s in signals),
+        "horizon": horizon,
+        "fdr_alpha": fdr_alpha,
+        "n_tested": len(testable),
+        "signals": signals,
+    }
 
 
 def funding_zscore_backtest(

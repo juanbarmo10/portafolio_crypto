@@ -24,7 +24,13 @@ from typing import Any
 import pandas as pd
 
 from core.config import Settings
-from db.queries import latest_by_source, latest_observation, series_history, upcoming_events
+from db.queries import (
+    latest_by_source,
+    latest_observation,
+    series_history,
+    series_release_history,
+    upcoming_events,
+)
 
 # ---------------------------------------------------------------------------
 # Pure numeric helpers
@@ -203,7 +209,9 @@ def macro_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def fed_net_liquidity_series(conn: sqlite3.Connection, settings: Settings) -> pd.Series:
+def fed_net_liquidity_series(
+    conn: sqlite3.Connection, settings: Settings, by_release: bool = False
+) -> pd.Series:
     """Fed **net liquidity** = WALCL − TGA − RRP, in USD billions (level 1, A1).
 
     The most-followed proxy for how much money is actually available in the system;
@@ -213,14 +221,18 @@ def fed_net_liquidity_series(conn: sqlite3.Connection, settings: Settings) -> pd
     configured ``unit_scale`` and aligned **as-of** (union of dates, forward-filled)
     before subtracting. Returns an ascending, tz-aware Series in USD billions, or an
     empty Series if any component is missing.
+
+    ``by_release`` indexes each component by its publication date (``ts_release``) instead
+    of the reference date, for look-ahead-free backtests (§9).
     """
     comps = settings.source("fred").get("liquidity_components", {})
     walcl, tga, rrp = comps.get("walcl"), comps.get("tga"), comps.get("rrp")
     if not (walcl and tga and rrp):
         return pd.Series(dtype="float64")
+    hist = series_release_history if by_release else series_history
 
     def _scaled(entry: dict) -> pd.Series:
-        s = series_history(conn, "fred", entry["code"]).dropna()
+        s = hist(conn, "fred", entry["code"]).dropna()
         return s * float(entry.get("unit_scale", 1.0))
 
     frames = {"walcl": _scaled(walcl), "tga": _scaled(tga), "rrp": _scaled(rrp)}
@@ -1950,3 +1962,57 @@ def dca_allocator(
         "target_asset": drift.attrs.get("most_underweight"),
         "items": items,
     }
+
+
+def source_discrepancy_table(
+    conn: sqlite3.Connection, settings: Settings, symbols: tuple[str, ...] = ("BTC", "ETH")
+) -> pd.DataFrame:
+    """C4: the same asset priced by different free sources → the spread (§9 "don't mix sources").
+
+    Compares the latest CoinGecko price (``<cid>:price``) against the Binance and Coinbase spot
+    closes (``<SYM>:spot_close:<ex>``). The percentage columns are each venue vs. CoinGecko; the
+    spread is (max−min)/min across the available sources. Market cap = price × supply inherits the
+    same spread, which is why §9 forbids mixing sources within one series. Part of the spread is
+    snapshot-timing (CoinGecko is a daily snapshot, the closes are daily closes) — a caveat, not a
+    defeat of the point. Public-safe (no account data).
+
+    Returns [symbol, coingecko, binance, coinbase, binance_vs_cg_pct, coinbase_vs_cg_pct,
+    spread_pct]; only rows with >= 2 available prices.
+    """
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+
+    def _price(source: str, sid: str) -> float | None:
+        obs = latest_observation(conn, source, sid)
+        return None if obs is None else float(obs[1])
+
+    def _pct(a: float | None, b: float | None) -> float | None:
+        return None if a is None or b is None or b == 0 else (a / b - 1.0) * 100.0
+
+    rows: list[dict[str, Any]] = []
+    for sym in symbols:
+        cid = id_by_symbol.get(sym)
+        cg = _price("coingecko", f"{cid}:price") if cid else None
+        bn = _price("spot_prices", f"{sym}:spot_close:binance")
+        cb = _price("spot_prices", f"{sym}:spot_close:coinbase")
+        prices = [p for p in (cg, bn, cb) if p is not None and p > 0]
+        if len(prices) < 2:
+            continue
+        spread = (max(prices) - min(prices)) / min(prices) * 100.0
+        rows.append(
+            {
+                "symbol": sym,
+                "coingecko": cg,
+                "binance": bn,
+                "coinbase": cb,
+                "binance_vs_cg_pct": _pct(bn, cg),
+                "coinbase_vs_cg_pct": _pct(cb, cg),
+                "spread_pct": spread,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "symbol", "coingecko", "binance", "coinbase",
+            "binance_vs_cg_pct", "coinbase_vs_cg_pct", "spread_pct",
+        ],
+    )

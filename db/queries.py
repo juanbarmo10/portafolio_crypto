@@ -58,6 +58,32 @@ def series_history(
     return pd.Series(values, index=idx, dtype="float64")
 
 
+def series_release_history(
+    conn: sqlite3.Connection, source: str, series_id: str
+) -> pd.Series:
+    """Full history indexed by **release date** (``ts_release``, falling back to ``ts``).
+
+    Point-in-time view for look-ahead-free backtests (§9): a macro reading is only *known*
+    from the day it was published, so signals must be built on this index, not on ``ts``
+    (the reference date, which is earlier). Duplicate release dates keep the last value.
+    Ascending; empty Series if absent.
+    """
+    rows = conn.execute(
+        """
+        SELECT COALESCE(ts_release, ts) AS rel, value FROM observations
+        WHERE source = ? AND series_id = ?
+        ORDER BY rel ASC
+        """,
+        (source, series_id),
+    ).fetchall()
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    values = [None if r[1] is None else float(r[1]) for r in rows]
+    s = pd.Series(values, index=idx, dtype="float64")
+    return s[~s.index.duplicated(keep="last")]
+
+
 def latest_by_source(conn: sqlite3.Connection, source: str) -> dict[str, float]:
     """Return ``{series_id: latest_value}`` for every series of a given source.
 

@@ -63,6 +63,7 @@ from transform.indicators import (  # noqa: E402
     realized_pnl_fifo,
     regime_scoreboard,
     rotation_summary,
+    source_discrepancy_table,
     stablecoins_summary,
     thesis_invalidation_table,
     thesis_tvl_table,
@@ -71,7 +72,7 @@ from transform.indicators import (  # noqa: E402
     wallet_pnl_table,
     wallet_value_history,
 )
-from validation.backtest import funding_zscore_backtest  # noqa: E402
+from validation.backtest import funding_zscore_backtest, signal_battery  # noqa: E402
 from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
 from transform.rally_quality import (  # noqa: E402
     RALLY_CAPITULATION,
@@ -1862,6 +1863,17 @@ def _validation_rows(db_path_str: str, z: float, horizon: int) -> list[dict]:
         conn.close()
 
 
+@st.cache_data(ttl=3600, show_spinner="Validando batería de señales (C1)…")
+def _battery_result(db_path_str: str, horizon: int) -> dict:
+    """C1 signal battery + FDR (sección 8/9). Cached ~1h. Own connection → serializable dict."""
+    settings = load_settings()
+    conn = init_db(Path(db_path_str))
+    try:
+        return signal_battery(conn, settings, horizon=horizon)
+    finally:
+        conn.close()
+
+
 def _section_validation(settings) -> None:
     """Read-only showcase of the honest signal-validation table (sección 8, sección 13 #4).
 
@@ -1927,6 +1939,117 @@ def _section_validation(settings) -> None:
         "testing* (varios activos → falsos positivos esperables). **Preliminar, no accionable.** "
         "Documentar el resultado aunque no haya edge es parte del proyecto (sección 8); se reejecuta al "
         "acumular historial. Cacheado 1 h."
+    )
+
+    _battery_view(settings)
+    _source_discrepancy_view(settings)
+
+
+def _battery_view(settings) -> None:
+    """C1: signal battery + Benjamini-Hochberg FDR — several level-1/2 signals at once (sección 8/9)."""
+    st.subheader("Batería de señales + corrección FDR (C1)")
+    res = _battery_result(str(settings.db_path), 30)
+    sigs = res.get("signals", [])
+    if not sigs:
+        st.info("Sin historial suficiente para la batería todavía.")
+        return
+
+    def _verdict(s: dict) -> str:
+        if s["status"] != "ok":
+            return "sin datos"
+        return "✓ significativa" if s.get("significant") else "no significativa"
+
+    show = pd.DataFrame(
+        {
+            "Señal": [s["name"] for s in sigs],
+            "Hipótesis": [s["hypothesis"] for s in sigs],
+            "n": [s["n_signal"] for s in sigs],
+            "Edge (pp)": ["—" if s["edge"] is None else f"{s['edge']:+.2f}" for s in sigs],
+            "p": ["—" if s["pvalue"] is None else f"{s['pvalue']:.3f}" for s in sigs],
+            "q (FDR)": ["—" if s["qvalue"] is None else f"{s['qvalue']:.3f}" for s in sigs],
+            "Veredicto": [_verdict(s) for s in sigs],
+        }
+    )
+    st.dataframe(
+        show.style.map(_color_by_sign, subset=["Edge (pp)"]),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "n": st.column_config.TextColumn(
+                help="Nº de episodios **no solapados** (fechas de señal separadas ≥ horizonte). "
+                "No son días sueltos: colapsar rachas evita contar la misma tendencia mil veces."
+            ),
+            "Edge (pp)": st.column_config.TextColumn(help="Retorno medio de la señal − baseline, a 30 d."),
+            "p": st.column_config.TextColumn(help="p-valor por permutación (bootstrap), dos colas."),
+            "q (FDR)": st.column_config.TextColumn(
+                help="p-valor ajustado por Benjamini-Hochberg sobre las señales con datos. "
+                "Significativa si q ≤ 0.10 (controla la tasa de falsos descubrimientos)."
+            ),
+        },
+    )
+    n_sig = sum(1 for s in sigs if s.get("significant"))
+    tested = res.get("n_tested", 0)
+    if n_sig == 0:
+        verdict = (
+            f"**Ninguna de las {tested} señales con datos supera el umbral FDR (q ≤ "
+            f"{res.get('fdr_alpha', 0.10):.2f}).** No es un fracaso: es el resultado honesto que "
+            "justifica quedarse con la regla más simple (sección 8). La versión ingenua por día marcaba "
+            "'liquidez neta' como significativa (+5.8 pp), pero era **autocorrelación** — al colapsar "
+            "las rachas en episodios independientes el edge se desvanece."
+        )
+    else:
+        verdict = (
+            f"**{n_sig} de {tested} señales** superan el umbral FDR (q ≤ {res.get('fdr_alpha', 0.10):.2f}). "
+            "Aun así, ~1.2 ciclos de historia → indicativo, no ley."
+        )
+    st.caption(
+        "Horizonte 30 d, precios **Binance** (sección 9, no CoinGecko), macro *point-in-time* por "
+        "fecha de publicación (`ts_release`). " + verdict + " Cacheado 1 h."
+    )
+
+
+def _source_discrepancy_view(settings) -> None:
+    """C4: same asset, different free sources → the spread (§9 'don't mix sources')."""
+    conn = init_db(settings.db_path)
+    try:
+        df = source_discrepancy_table(conn, settings)
+    finally:
+        conn.close()
+    if df.empty:
+        return
+    st.subheader("Discrepancia entre fuentes (C4)")
+
+    def _pct(x) -> str:
+        return "—" if x is None or pd.isna(x) else f"{x:+.3f}%"
+
+    show = pd.DataFrame(
+        {
+            "Logo": [settings.meta_for(s).get("logo_url") or "" for s in df["symbol"]],
+            "Activo": df["symbol"],
+            "CoinGecko": df["coingecko"].map(_fmt_usd),
+            "Binance": df["binance"].map(_fmt_usd),
+            "Coinbase": df["coinbase"].map(_fmt_usd),
+            "Δ Binance": df["binance_vs_cg_pct"].map(_pct),
+            "Δ Coinbase": df["coinbase_vs_cg_pct"].map(_pct),
+            "Spread": df["spread_pct"].map(lambda x: "—" if pd.isna(x) else f"{x:.3f}%"),
+        }
+    )
+    st.dataframe(
+        show,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Δ Binance": st.column_config.TextColumn(help="Binance vs. CoinGecko (referencia)."),
+            "Δ Coinbase": st.column_config.TextColumn(help="Coinbase vs. CoinGecko (referencia)."),
+            "Spread": st.column_config.TextColumn(help="(máx − mín) / mín entre las fuentes."),
+        },
+    )
+    st.caption(
+        "El *mismo* activo cotiza distinto en cada fuente (spread de venue + USDT vs USD + desfase de "
+        "snapshot). El *market cap* = precio × supply hereda esta brecha. Por eso **sección 9 prohíbe "
+        "mezclar fuentes en una misma serie**: el asignador usa Binance, el panel CoinGecko, nunca "
+        "cruzados. Parte del spread es desfase de captura (CoinGecko es snapshot; los cierres son EOD)."
     )
 
 

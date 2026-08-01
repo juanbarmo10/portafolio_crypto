@@ -15,6 +15,7 @@ import pytest
 
 from core.config import load_settings
 from db.loader import init_db, upsert_capital_flows, upsert_observations, upsert_trades
+from db.queries import series_release_history
 from transform.indicators import (
     capital_deployed_summary,
     dca_status,
@@ -24,6 +25,7 @@ from transform.indicators import (
     holdings_table,
     macro_table,
     portfolio_table,
+    source_discrepancy_table,
     thesis_invalidation_table,
     thesis_tvl_table,
     value_accrual_table,
@@ -703,3 +705,44 @@ def test_dca_status_empty_plan(conn, settings) -> None:
     assert status["planned_usd"] == 0.0
     assert status["next_tranche"] is None
     assert status["monthly_min_usd"] == 200
+
+
+def test_source_discrepancy_table_spread(conn, settings) -> None:
+    # Same BTC priced by three free sources; spread = (max-min)/min.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 100.0),
+                _obs("BTC:spot_close:binance", "2026-07-23T00:00:00+00:00", 99.0, source="spot_prices"),
+                _obs("BTC:spot_close:coinbase", "2026-07-23T00:00:00+00:00", 101.0, source="spot_prices"),
+            ]
+        ),
+    )
+    df = source_discrepancy_table(conn, settings, symbols=("BTC",))
+    row = df[df["symbol"] == "BTC"].iloc[0]
+    assert row["binance_vs_cg_pct"] == pytest.approx(-1.0)   # 99/100 - 1
+    assert row["coinbase_vs_cg_pct"] == pytest.approx(1.0)   # 101/100 - 1
+    assert row["spread_pct"] == pytest.approx((101.0 - 99.0) / 99.0 * 100.0)
+
+
+def test_series_release_history_indexes_by_release(conn) -> None:
+    # ts = reference date (June); ts_release = publication (mid-July). The point-in-time index
+    # must use the release date, not the earlier reference date (§9 look-ahead discipline).
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                {
+                    "source": "fred",
+                    "series_id": "CPIAUCSL",
+                    "ts": "2026-06-01T00:00:00+00:00",
+                    "ts_release": "2026-07-15T00:00:00+00:00",
+                    "value": 300.0,
+                }
+            ]
+        ),
+    )
+    s = series_release_history(conn, "fred", "CPIAUCSL")
+    assert s.index[0] == pd.Timestamp("2026-07-15T00:00:00+00:00")
+    assert float(s.iloc[0]) == 300.0

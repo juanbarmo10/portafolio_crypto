@@ -61,3 +61,29 @@ def bootstrap_mean_diff_pvalue(
     permuted = pool[order]
     diffs = permuted[:, :n_sig].mean(axis=1) - permuted[:, n_sig:].mean(axis=1)
     return float((np.abs(diffs) >= abs(observed)).mean())
+
+
+def benjamini_hochberg(
+    pvalues: list[float], alpha: float = 0.10
+) -> list[tuple[float, bool]]:
+    """Benjamini-Hochberg FDR correction over a family of p-values (§9 multiple testing).
+
+    Testing many signals at once inflates false positives: at α=0.05 over 10 independent
+    signals you expect ~0.5 spurious "wins". BH controls the **false discovery rate** — the
+    expected fraction of rejections that are false — instead of the per-test error. Returns,
+    aligned to the input order, ``(qvalue, reject)`` where the qvalue is the BH-adjusted
+    p-value and ``reject`` is ``qvalue <= alpha``. Empty input → empty list.
+    """
+    m = len(pvalues)
+    if m == 0:
+        return []
+    p = np.asarray(pvalues, dtype=float)
+    order = np.argsort(p)                       # ascending
+    ranks = np.arange(1, m + 1)
+    adj = p[order] * m / ranks                  # BH adjustment
+    adj = np.minimum.accumulate(adj[::-1])[::-1]  # enforce monotone non-decreasing in p
+    adj = np.clip(adj, 0.0, 1.0)
+    q = np.empty(m, dtype=float)
+    q[order] = adj
+    reject = q <= alpha
+    return [(float(q[i]), bool(reject[i])) for i in range(m)]

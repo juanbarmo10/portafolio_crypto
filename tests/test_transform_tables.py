@@ -214,6 +214,33 @@ def test_holdings_table_values_and_weights(conn, settings) -> None:
     assert btc["weight_pct"] == pytest.approx(1300.0 / 1800.0 * 100)
 
 
+def test_holdings_table_weight_excluding_cash(conn, settings) -> None:
+    # 0.02 BTC @ 65000 = 1300 + 0.5 ETH @ 2000 = 1000 (invested 2300); 700 USDT cash (total 3000).
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-23T00:00:00+00:00", 65000.0),
+                _obs("ethereum:price", "2026-07-23T00:00:00+00:00", 2000.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+                _obs("ETH:balance:spot", "2026-07-23T00:00:00+00:00", 0.5, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-23T00:00:00+00:00", 700.0, source="binance"),
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    assert table.attrs["invested_value_usd"] == pytest.approx(2300.0)
+    btc = table[table["asset"] == "BTC"].iloc[0]
+    eth = table[table["asset"] == "ETH"].iloc[0]
+    usdt = table[table["asset"] == "USDT"].iloc[0]
+    # Weight excluding cash is over the invested (non-cash) total, not the grand total.
+    assert btc["weight_ex_cash_pct"] == pytest.approx(1300.0 / 2300.0 * 100)
+    assert eth["weight_ex_cash_pct"] == pytest.approx(1000.0 / 2300.0 * 100)
+    # Cash is excluded from its own view (NaN -> rendered "—"). Non-cash weights sum to 100%.
+    assert pd.isna(usdt["weight_ex_cash_pct"])
+    assert table["weight_ex_cash_pct"].dropna().sum() == pytest.approx(100.0)
+
+
 def test_holdings_table_decodes_earn_and_prices_wbeth(conn, settings) -> None:
     # BTC + flexible-Earn LDBTC merge to BTC; WBETH is priced via its own CoinGecko id
     # (wrapped-beacon-eth = $2071), NOT as ETH.

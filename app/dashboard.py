@@ -47,6 +47,7 @@ from transform.indicators import (  # noqa: E402
     dca_status,
     dca_vs_baseline_table,
     drift_vs_target,
+    drift_vs_target_asset,
     dvol_summary,
     earn_rewards_summary,
     execution_summary,
@@ -1206,6 +1207,9 @@ def _section_execution(conn, settings) -> None:
                 "Peso": holdings["weight_pct"].map(
                     lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
                 ),
+                "Peso sin efectivo": holdings["weight_ex_cash_pct"].map(
+                    lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
+                ),
                 "Nota": holdings["note"],
             }
         )
@@ -1213,7 +1217,16 @@ def _section_execution(conn, settings) -> None:
             show,
             hide_index=True,
             width="stretch",
-            column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+            column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
+                "Peso": st.column_config.TextColumn(
+                    help="Peso sobre el **valor total** de la cartera (efectivo incluido)."
+                ),
+                "Peso sin efectivo": st.column_config.TextColumn(
+                    help="Peso sobre el **capital invertido** (excluye stablecoins/efectivo): cuánto "
+                    "pesa el token frente a los demás tokens, ignorando la caja. El efectivo muestra —."
+                ),
+            },
         )
         wallets = ", ".join(settings.source("binance_account").get("wallets", ["spot"]))
         st.caption(
@@ -1439,11 +1452,44 @@ def _drift_bar(records: list[dict], settings):
 
 
 def _dca_shopping_list_view(conn, settings, holdings) -> None:
-    """Parte G (G5-d/G5.3): the month's DCA shopping list from the allocator (level 4)."""
-    a = dca_allocator(conn, settings, holdings=holdings)
+    """Parte G (G5-d/G5.3): the month's DCA shopping list from the allocator (level 4).
+
+    Interactive: two sliders (cash to keep as reserve, cash to deposit now) drive the deployable
+    budget — the list and the *projected* wallet weights react to both. Still pull-not-push (§2):
+    it recomputes on demand, no live tickers.
+    """
+    st.markdown("**Lista de compra del mes**")
+
+    # Only the new deposit is allocated; existing cash is left untouched (cash_keep = cash_now).
+    drift0 = drift_vs_target_asset(conn, settings, holdings)
+    if drift0.empty:
+        return
+    cash_now = float(
+        next((r["value_usd"] for r in drift0.to_dict("records") if r["asset"] == "CASH"), 0.0)
+    )
+    default_deposit = float(settings.raw.get("dca", {}).get("monthly_contribution_min_usd", 200))
+
+    deposit = st.slider(
+        "Efectivo a depositar ahora",
+        min_value=0.0,
+        max_value=2000.0,
+        value=default_deposit,
+        step=25.0,
+        format="$%.0f",
+        key="dca_deposit",
+        help="Dinero nuevo que aportas en este momento. Solo este importe se reparte entre los "
+        "activos infra-ponderados; tu caja actual no se toca.",
+    )
+
+    a = dca_allocator(conn, settings, holdings=holdings, deposit_usd=deposit, cash_keep_usd=cash_now)
     if not a.get("has_data"):
         return
-    st.markdown("**Lista de compra del mes**")
+
+    deployable = a.get("deployable_usd", 0.0)
+    st.caption(
+        f"Se reparte tu depósito de **{_fmt_usd(deposit)}** entre los activos infra-ponderados "
+        "(tu caja actual no se toca)."
+    )
     rows = [
         {
             "Logo": settings.meta_for(i["asset"]).get("logo_url") or "",
@@ -1474,11 +1520,11 @@ def _dca_shopping_list_view(conn, settings, holdings) -> None:
         },
     )
     st.caption(
-        f"Total a desplegar: **{_fmt_usd(a['total_allocated_usd'])}** (aporte "
-        f"{_fmt_usd(a['contribution_usd'])} + exceso de caja: {_fmt_usd(a['cash_now_usd'])} → objetivo "
-        f"{_fmt_usd(a['cash_target_usd'])}). **Asignación por bandas de rebalanceo, no predicción de "
-        "precio** (Parte G). Te dice *dónde va el aporte que ya decidiste hacer*, no *cuándo comprar*; "
-        "ejecución **manual** (la key de Binance es de solo lectura). Capa 4 (tilt) desactivada hasta validar."
+        f"Total repartido: **{_fmt_usd(a['total_allocated_usd'])}** de {_fmt_usd(deployable)} "
+        "depositados. **Asignación por bandas de rebalanceo, no predicción de precio** (Parte G): el "
+        "depósito va al más infra-ponderado por drift. Te dice *dónde va el aporte*, no *cuándo "
+        "comprar*; ejecución **manual** (la key de Binance es de solo lectura). Capa 4 (tilt) "
+        "desactivada hasta validar."
     )
     bars = _drift_bar(
         [

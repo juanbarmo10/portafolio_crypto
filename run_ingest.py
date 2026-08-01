@@ -112,6 +112,23 @@ def notify_ingest_failures(settings: Settings, failed: list[str]) -> bool:
         return False
 
 
+def select_ingesters(ingesters: list[Ingester], only: list[str] | None) -> list[Ingester]:
+    """Keep only ingesters whose class name matches one of the ``--only`` tokens.
+
+    Case-insensitive substring match on the class name, so ``--only binance`` selects
+    ``BinanceAccountIngester`` (refresh just your holdings/trades after a deposit or buy) and
+    ``--only coingecko`` selects the price snapshot. Warns if a token matches nothing.
+    """
+    if not only:
+        return ingesters
+    tokens = [t.lower() for t in only]
+    kept = [i for i in ingesters if any(t in type(i).__name__.lower() for t in tokens)]
+    if not kept:
+        names = ", ".join(sorted(type(i).__name__ for i in ingesters))
+        log.warning("--only %s matched no ingester. Available: %s", " ".join(only), names)
+    return kept
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments. Returns the parsed namespace."""
     parser = argparse.ArgumentParser(description="cryptodash ingestion pipeline")
@@ -131,6 +148,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="One-time historical backfill (CoinGecko daily prices) instead of the "
         "daily snapshot; gives change/return/baseline calcs real history.",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="SOURCE",
+        help="Run only the ingesters whose class name matches these tokens (case-insensitive "
+        "substring). E.g. '--only binance' refreshes just your holdings/trades after a deposit "
+        "or buy — seconds instead of the full pipeline. Then refresh the dashboard.",
     )
     return parser.parse_args(argv)
 
@@ -167,7 +192,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.backfill:
             filled = 0
             # full_history=True -> deep Convert/Earn/capital-flows reconstruction (slow, once).
-            for ingester in build_ingesters(settings, public=args.public, full_history=True):
+            built = build_ingesters(settings, public=args.public, full_history=True)
+            for ingester in select_ingesters(built, args.only):
                 if hasattr(ingester, "fetch_history"):  # CoinGecko daily price history
                     filled += upsert_observations(conn, ingester.fetch_history())
                 if hasattr(ingester, "fetch_trades"):  # deep Convert history -> cost basis
@@ -179,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
 
         total = 0
         failed: list[str] = []
-        for ingester in build_ingesters(settings, public=args.public):
+        for ingester in select_ingesters(build_ingesters(settings, public=args.public), args.only):
             name = type(ingester).__name__
             try:
                 df = ingester.fetch()

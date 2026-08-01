@@ -678,9 +678,17 @@ def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame
         return df
     total = df["value_usd"].sum(skipna=True)
     df["weight_pct"] = df["value_usd"] / total * 100 if total else None
+    # Weight over the invested portfolio only (cash excluded): what each token is worth relative
+    # to the other tokens, ignoring dry powder. Cash rows get None (they are not part of this view).
+    non_cash_total = df.loc[~df["is_cash"], "value_usd"].sum(skipna=True)
+    df["weight_ex_cash_pct"] = (
+        df["value_usd"] / non_cash_total * 100 if non_cash_total else None
+    )
+    df.loc[df["is_cash"], "weight_ex_cash_pct"] = None
     df = df.sort_values("value_usd", ascending=False, na_position="last").reset_index(drop=True)
     df.attrs["total_value_usd"] = float(total) if total else 0.0
     df.attrs["cash_usd"] = float(df.loc[df["is_cash"], "value_usd"].sum(skipna=True))
+    df.attrs["invested_value_usd"] = float(non_cash_total) if non_cash_total else 0.0
     return df
 
 
@@ -1815,6 +1823,8 @@ def dca_allocator(
     settings: Settings,
     contribution_usd: float | None = None,
     holdings: pd.DataFrame | None = None,
+    deposit_usd: float | None = None,
+    cash_keep_usd: float | None = None,
 ) -> dict[str, Any]:
     """G5-d: the month's **shopping list** — composes layers 1-3 of the DCA allocator (§ Parte G).
 
@@ -1831,14 +1841,24 @@ def dca_allocator(
     − current_value)`` filled proportionally by the deployable budget (contribution + excess cash),
     capped at need so it never overshoots.
 
+    ``deposit_usd`` (new money added now) and ``cash_keep_usd`` (cash held back as reserve) let the
+    caller drive the deployable budget interactively: ``deployable = deposit + max(0, cash_now −
+    reserve)`` — only the cash actually used to buy. When ``cash_keep_usd`` is None the reserve is
+    the config CASH-target weight (original behavior); ``deposit_usd`` falls back to
+    ``contribution_usd`` then the configured monthly minimum.
+
     Returns {has_data, recommendation, reason, regime_label, blocking_events, postpone_days,
-    contribution_usd, deployable_usd, total_allocated_usd, cash_now_usd, cash_target_usd,
-    target_asset, items: [{asset, usd, target_pct, current_pct, drift_pp, vetoed, veto_reason}]}.
+    contribution_usd, deposit_usd, deployable_usd, total_allocated_usd, cash_now_usd,
+    cash_target_usd, cash_reserve_usd, cash_projected_usd, cash_projected_pct, total_usd,
+    new_total_usd, target_asset, items: [{asset, usd, value_usd, target_pct, current_pct,
+    projected_pct, drift_pp, vetoed, veto_reason}]}.
     """
     if holdings is None:
         holdings = holdings_table(conn, settings)
     contribution = float(
-        contribution_usd
+        deposit_usd
+        if deposit_usd is not None
+        else contribution_usd
         if contribution_usd is not None
         else settings.raw.get("dca", {}).get("monthly_contribution_min_usd", 200)
     )
@@ -1863,9 +1883,11 @@ def dca_allocator(
         return (status == "red"), (reason if status == "red" else None)
 
     new_total = total + contribution
-    cash_target = float(targets.get("CASH", 0.0)) / 100.0 * new_total
+    cash_target = float(targets.get("CASH", 0.0)) / 100.0 * new_total  # config-derived reserve
     cash_now = val_by_asset.get("CASH", 0.0)
-    deployable = contribution + max(0.0, cash_now - cash_target)  # new money + excess dry powder
+    # Reserve: explicit override (interactive slider) or the config CASH-target weight.
+    cash_reserve = max(0.0, float(cash_keep_usd)) if cash_keep_usd is not None else cash_target
+    deployable = contribution + max(0.0, cash_now - cash_reserve)  # deposit + spendable dry powder
 
     needs: dict[str, float] = {}
     for asset, tgt in targets.items():
@@ -1886,6 +1908,7 @@ def dca_allocator(
             {
                 "asset": asset,
                 "usd": ticket,
+                "value_usd": val_by_asset.get(asset, 0.0),
                 "target_pct": float(tgt),
                 "current_pct": curpct.get(asset, 0.0),
                 "drift_pp": drift_by_asset.get(asset),
@@ -1894,6 +1917,16 @@ def dca_allocator(
             }
         )
     items.sort(key=lambda i: i["usd"], reverse=True)
+
+    # Projected wallet weights after executing the list. Buying only converts cash→assets, so the
+    # only new value is the deposit → projected total = total + deposit. Cash left = current cash +
+    # deposit − spent (≈ reserve when fully deployed, more when the budget is smaller than the need).
+    total_alloc = float(sum(i["usd"] for i in items))
+    projected_total = new_total
+    for i in items:
+        proj_val = i["value_usd"] + i["usd"]
+        i["projected_pct"] = (proj_val / projected_total * 100.0) if projected_total > 0 else 0.0
+    cash_projected = cash_now + contribution - total_alloc
 
     advice = monthly_contribution_advice(conn, settings, holdings=holdings)
     return {
@@ -1904,10 +1937,16 @@ def dca_allocator(
         "blocking_events": advice.get("blocking_events", []),
         "postpone_days": advice.get("postpone_days"),
         "contribution_usd": contribution,
+        "deposit_usd": contribution,
         "deployable_usd": deployable,
-        "total_allocated_usd": float(sum(i["usd"] for i in items)),
+        "total_allocated_usd": total_alloc,
         "cash_now_usd": cash_now,
         "cash_target_usd": cash_target,
+        "cash_reserve_usd": cash_reserve,
+        "cash_projected_usd": cash_projected,
+        "cash_projected_pct": (cash_projected / projected_total * 100.0) if projected_total > 0 else 0.0,
+        "total_usd": total,
+        "new_total_usd": new_total,
         "target_asset": drift.attrs.get("most_underweight"),
         "items": items,
     }

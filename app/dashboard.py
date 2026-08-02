@@ -1910,14 +1910,15 @@ def _section_fiscal(conn, settings) -> None:
     st.header("6 · Fiscal (Colombia / DIAN)", anchor="fiscal")
     st.warning(f"⚠️ **{disclaimer}** El panel estima; el contador liquida.")
 
-    df = cop_usd_pnl_table(conn, settings)
+    # Build the lots once and thread through every fiscal view (avoids ~5 recomputations).
     built = build_tax_lots(conn, settings)
+    df = cop_usd_pnl_table(conn, settings, built=built)
     trm_now = df.attrs.get("trm_now")
     if trm_now is None:
         st.info("Falta la serie TRM. Ejecuta `python run_ingest.py --only trm`.")
         return
 
-    dsum = disposal_summary(conn, settings)
+    dsum = disposal_summary(conn, settings, built=built)
     year = dsum["year"]
     c1, c2, c3 = st.columns(3)
     c1.metric("TRM hoy (COP/USD)", f"{trm_now:,.2f}")
@@ -2010,7 +2011,7 @@ def _section_fiscal(conn, settings) -> None:
         )
 
     # Maturation toward 24 months (measured in units, not value).
-    mat = maturity_summary(conn, settings)
+    mat = maturity_summary(conn, settings, built=built)
     if not mat.empty:
         st.markdown("**Maduración a 24 meses** (en unidades; ≥24 m → ganancia ocasional 15%)")
         mat_rows = [{
@@ -2048,7 +2049,7 @@ def _section_fiscal(conn, settings) -> None:
             value=round(max_u, 6), step=round(max_u / 100, 6) or 1e-6, format="%.6f",
             key="fiscal_sim_units",
         )
-        sim = simulate_peps_sale(conn, settings, sim_asset, sim_units)
+        sim = simulate_peps_sale(conn, settings, sim_asset, sim_units, built=built)
         if sim.get("has_data"):
             m1, m2, m3 = st.columns(3)
             m1.metric("Ingreso (proceeds)", _fmt_cop(sim["proceeds_cop"]),
@@ -2149,7 +2150,7 @@ def _section_fiscal(conn, settings) -> None:
         )
 
     # Exit ladder (Fase D) — sell tranches written in cold blood, with progress vs. trigger.
-    ladder = exit_ladder_table(conn, settings)
+    ladder = exit_ladder_table(conn, settings, built=built)
     if not ladder.empty:
         st.markdown("**Escalera de salida** (escrita hoy, en frío; progreso hacia cada trigger)")
         lad_rows = [{
@@ -2167,7 +2168,7 @@ def _section_fiscal(conn, settings) -> None:
         )
 
     # Formulario 160 (Fase E) — foreign-assets filing threshold.
-    f160 = form160_check(conn, settings)
+    f160 = form160_check(conn, settings, built=built)
     st.markdown("**Formulario 160** (activos en el exterior — Binance)")
     if not f160["has_uvt"]:
         st.info(

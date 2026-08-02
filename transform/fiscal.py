@@ -157,7 +157,9 @@ def _current_price_usd(conn: sqlite3.Connection, settings: Settings, asset: str)
     return None if obs is None else float(obs[1])
 
 
-def cop_usd_pnl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+def cop_usd_pnl_table(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> pd.DataFrame:
     """Unrealized PnL per asset in **USD and COP side by side** (FISCAL.md §6.2).
 
     Cost is the frozen COP cost of the lots still open (Art. 269); current value is the live
@@ -168,7 +170,7 @@ def cop_usd_pnl_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFr
 
     Columns: [asset, units, cost_usd, cost_cop, value_usd, value_cop, pnl_usd, pnl_cop].
     """
-    built = build_tax_lots(conn, settings)
+    built = built if built is not None else build_tax_lots(conn, settings)
     trm = _trm_series(conn, settings)
     trm_now = float(trm.iloc[-1]) if not trm.empty else None
 
@@ -224,7 +226,9 @@ def persist_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, 
 # --- Fase B: maturation metrics + pre-sale PEPS simulator (FISCAL.md §6.2/§6.3) --------------
 
 
-def maturity_summary(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+def maturity_summary(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> pd.DataFrame:
     """Per-asset maturation, measured in **units** (not value) — FISCAL.md §6.3.
 
     A lot matures ``long_term_months`` (24) after acquisition; once matured, selling it is
@@ -233,7 +237,7 @@ def maturity_summary(conn: sqlite3.Connection, settings: Settings) -> pd.DataFra
     that ``lot_maturity_soon`` will alert on. Columns: [asset, units_open, units_matured,
     pct_matured, cost_cop_open, next_maturity, days_to_next].
     """
-    built = build_tax_lots(conn, settings)
+    built = built if built is not None else build_tax_lots(conn, settings)
     today = pd.Timestamp(datetime.now(timezone.utc))
     agg: dict[str, dict[str, Any]] = {}
     for lot in built["lots"]:
@@ -274,7 +278,7 @@ def maturity_summary(conn: sqlite3.Connection, settings: Settings) -> pd.DataFra
 
 def simulate_peps_sale(
     conn: sqlite3.Connection, settings: Settings, asset: str, units: float,
-    price_usd: float | None = None,
+    price_usd: float | None = None, built: dict | None = None,
 ) -> dict[str, Any]:
     """The most valuable function (FISCAL.md §6.2): "if I sell N units of X", **before** selling.
 
@@ -293,7 +297,7 @@ def simulate_peps_sale(
     ord_rate = float(fiscal.get("ordinary_marginal_rate_pct", 0.0)) / 100.0
     ord_is_estimate = bool(fiscal.get("ordinary_rate_is_estimate", True))
 
-    built = build_tax_lots(conn, settings)
+    built = built if built is not None else build_tax_lots(conn, settings)
     lots = sorted(
         (lot for lot in built["lots"] if lot["asset"] == asset and lot["units_remaining"] > 1e-12),
         key=lambda lot: lot["acquired_at"],
@@ -371,7 +375,9 @@ def simulate_peps_sale(
     }
 
 
-def disposal_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+def disposal_summary(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> dict[str, Any]:
     """Count this year's disposals and flag habitual-activity risk (FISCAL.md §7.3).
 
     Sells **and** swaps (permutas) count; buys do not. If the DIAN sees a habitual trading
@@ -383,7 +389,7 @@ def disposal_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, 
     Returns {year, count, ventas, permutas, threshold, habitual_risk, permuta_events,
     realized_gain_cop}.
     """
-    built = build_tax_lots(conn, settings)
+    built = built if built is not None else build_tax_lots(conn, settings)
     hab = settings.raw.get("fiscal", {}).get("habituality", {})
     threshold = int(hab.get("warn_disposals_per_year", 4))
     year = datetime.now(timezone.utc).year
@@ -479,7 +485,9 @@ def thesis_log_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFra
                                       "status", "review_date", "days_to_review", "review_overdue"])
 
 
-def exit_ladder_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+def exit_ladder_table(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> pd.DataFrame:
     """Exit-ladder tranches with progress toward each trigger (FISCAL.md §5).
 
     Progress is computed for ``precio`` (current price vs. target) and ``multiplo`` (current
@@ -494,7 +502,7 @@ def exit_ladder_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFr
     if not rows:
         return pd.DataFrame(columns=["asset", "tranche_n", "trigger_type", "trigger_value",
                                      "pct_to_sell", "detail", "progress_pct", "reached", "executed"])
-    pnl = cop_usd_pnl_table(conn, settings)
+    pnl = cop_usd_pnl_table(conn, settings, built=built)
     cost_by = {r["asset"]: (r["cost_usd"], r["units"]) for r in pnl.to_dict("records")}
     out = []
     for asset, tranche_n, ttype, tval, pct, executed_at in rows:
@@ -526,7 +534,9 @@ def exit_ladder_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFr
 # --- Fase E: Formulario 160 (foreign assets) — FISCAL.md §8 -----------------------------------
 
 
-def form160_check(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+def form160_check(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> dict[str, Any]:
     """Are you required to file Formulario 160 (foreign assets)? (FISCAL.md §8, Fase E).
 
     Binance is a foreign asset; if its **patrimonial value at cost** (Art. 74/271) exceeds
@@ -541,7 +551,7 @@ def form160_check(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any
     uvt_threshold = float(fiscal.get("foreign_assets_form160_uvt", 2000))
     uvt_by_year = fiscal.get("uvt_cop", {}) or {}
     year = datetime.now(timezone.utc).year
-    patrimonio_cop = float(cop_usd_pnl_table(conn, settings).attrs.get("patrimonio_cop", 0.0))
+    patrimonio_cop = float(cop_usd_pnl_table(conn, settings, built=built).attrs.get("patrimonio_cop", 0.0))
     uvt = uvt_by_year.get(year, uvt_by_year.get(str(year)))
     if not uvt:
         return {"has_uvt": False, "obligado": None, "patrimonio_cop": patrimonio_cop,

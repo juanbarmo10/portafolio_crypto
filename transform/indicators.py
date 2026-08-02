@@ -25,6 +25,7 @@ import pandas as pd
 
 from core.config import Settings
 from db.queries import (
+    current_balances,
     latest_by_source,
     latest_observation,
     series_history,
@@ -653,12 +654,11 @@ def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame
     price_aliases = cfg.get("price_aliases", {}) or {}
     priceable = set(id_by_symbol) | STABLECOINS
 
-    # Sum across wallets into one amount per *normalized* asset. Only wallet-suffixed
-    # series count, so legacy ``<ASSET>:balance`` rows don't double-count.
+    # Sum across wallets into one amount per *normalized* asset, using ONLY the most recent
+    # sync snapshot (current_balances): an asset fully moved out (e.g. SOL staked into BNSOL)
+    # stops being emitted, so its last balance must not linger as a phantom holding.
     per_asset: dict[str, float] = {}
-    for series_id, amount in latest_by_source(conn, "binance").items():
-        if ":balance:" not in series_id:
-            continue
+    for series_id, amount in current_balances(conn, "binance").items():
         asset = normalize_asset(series_id.split(":")[0], aliases, priceable)
         per_asset[asset] = per_asset.get(asset, 0.0) + amount
 

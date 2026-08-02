@@ -216,6 +216,27 @@ def test_holdings_table_values_and_weights(conn, settings) -> None:
     assert btc["weight_pct"] == pytest.approx(1300.0 / 1800.0 * 100)
 
 
+def test_holdings_table_drops_exited_asset(conn, settings) -> None:
+    # SOL held on 07-23 but absent from the 07-24 snapshot (e.g. staked into BNSOL): the last
+    # balance must NOT linger as a phantom holding. BTC is on both dates and stays.
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-24T00:00:00+00:00", 65000.0),
+                _obs("solana:price", "2026-07-24T00:00:00+00:00", 150.0),
+                _obs("BTC:balance:spot", "2026-07-23T00:00:00+00:00", 0.02, source="binance"),
+                _obs("SOL:balance:spot", "2026-07-23T00:00:00+00:00", 3.0, source="binance"),
+                _obs("BTC:balance:spot", "2026-07-24T00:00:00+00:00", 0.02, source="binance"),
+                # No SOL on 07-24 -> the position was exited; it must not appear.
+            ]
+        ),
+    )
+    table = holdings_table(conn, settings)
+    assert set(table["asset"]) == {"BTC"}      # SOL dropped despite its stale 07-23 balance
+    assert table.attrs["total_value_usd"] == pytest.approx(1300.0)
+
+
 def test_holdings_table_weight_excluding_cash(conn, settings) -> None:
     # 0.02 BTC @ 65000 = 1300 + 0.5 ETH @ 2000 = 1000 (invested 2300); 700 USDT cash (total 3000).
     upsert_observations(

@@ -54,3 +54,22 @@ TAO:
 BNB:
   description: "Exchange / L1. Tesis: quemas; riesgo regulatorio idiosincrático de Binance."
   logo_url: "https://coin-images.coingecko.com/coins/images/825/large/bnb-icon2_2x.png?1696501970"
+
+# Held-but-untracked assets (fuera del universo §5): stablecoins, wrappers de staking líquido y
+# efectivo fiat. No son tesis de inversión — solo aparecen en la "Cartera real" (nivel 4), así que
+# aquí solo llevan logo (y descripción breve) para que la tabla no salga sin icono.
+USDT:
+  description: "Stablecoin (efectivo). Valorada a $1."
+  logo_url: "https://coin-images.coingecko.com/coins/images/325/large/Tether.png?1696501661"
+USDC:
+  description: "Stablecoin (efectivo). Valorada a $1."
+  logo_url: "https://coin-images.coingecko.com/coins/images/6319/large/USDC.png?1769615602"
+BNSOL:
+  description: "SOL en staking líquido de Binance. Cuenta como SOL (tramo/drift); precio propio."
+  logo_url: "https://coin-images.coingecko.com/coins/images/40132/large/bnsol.png?1725968367"
+WBETH:
+  description: "ETH en staking líquido de Binance. Cuenta como ETH (tramo/drift); precio propio."
+  logo_url: "https://coin-images.coingecko.com/coins/images/30061/large/wbeth-icon.png?1696528983"
+COP:
+  description: "Peso colombiano (efectivo fiat)."
+  logo_url: "https://flagcdn.com/w80/co.png"

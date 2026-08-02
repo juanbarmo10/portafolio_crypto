@@ -107,6 +107,31 @@ def latest_by_source(conn: sqlite3.Connection, source: str) -> dict[str, float]:
     return {sid: float(val) for sid, val in rows if val is not None}
 
 
+def current_balances(conn: sqlite3.Connection, source: str = "binance") -> dict[str, float]:
+    """Return ``{series_id: value}`` for ``<asset>:balance:<wallet>`` series **as of the most
+    recent balance-sync date only**.
+
+    The account sync writes a full daily snapshot of every nonzero balance. When an asset is
+    fully moved out (e.g. SOL staked into BNSOL), it simply stops being emitted — so its last
+    nonzero balance would linger forever as a phantom holding under a plain ``MAX(ts) per series``
+    read (:func:`latest_by_source`). Anchoring to the single most-recent sync date drops any asset
+    absent from the latest snapshot, which is the correct "current holdings" semantics. Manual
+    holdings are stored elsewhere and handled separately by the caller.
+    """
+    max_ts = conn.execute(
+        "SELECT MAX(ts) FROM observations WHERE source = ? AND series_id LIKE '%:balance:%'",
+        (source,),
+    ).fetchone()[0]
+    if max_ts is None:
+        return {}
+    rows = conn.execute(
+        "SELECT series_id, value FROM observations "
+        "WHERE source = ? AND series_id LIKE '%:balance:%' AND ts = ?",
+        (source, max_ts),
+    ).fetchall()
+    return {sid: float(val) for sid, val in rows if val is not None}
+
+
 def upcoming_events(
     conn: sqlite3.Connection, within_days: int = 7, categories: tuple[str, ...] | None = None
 ) -> list[dict]:

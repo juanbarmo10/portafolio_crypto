@@ -2077,15 +2077,20 @@ def _section_fiscal(conn, settings) -> None:
                     "costo base en `trades`): excluidas del cálculo."
                 )
             if sim["consumed"]:
+                sim_logo = settings.meta_for(sim_asset).get("logo_url") or ""
                 cons = pd.DataFrame([{
-                    "Lote": c["lot_id"][:16],
+                    "Logo": sim_logo,
+                    "Activo": sim_asset,
                     "Adquirido": str(c["acquired_at"])[:10],
                     "Unidades": f"{c['units']:.6f}",
                     "Costo COP": _fmt_cop(c["cost_cop"]),
                     "Ganancia COP": f"{c['gain_cop']:+,.0f}",
                     "Régimen": "Ocasional (15%)" if c["regime"] == "ganancia_ocasional" else "Ordinaria",
                 } for c in sim["consumed"]])
-                st.dataframe(cons, hide_index=True, width="stretch")
+                st.dataframe(
+                    cons, hide_index=True, width="stretch",
+                    column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+                )
             st.caption(
                 "**ESTIMADO — verificar con contador.** Simula vender hoy a precio de mercado (CoinGecko) "
                 "y TRM de hoy, consumiendo los lotes más antiguos (PEPS). No ejecuta ninguna orden."
@@ -2094,16 +2099,28 @@ def _section_fiscal(conn, settings) -> None:
     # Disposals (sells/swaps) with their PEPS regime split, if any.
     if built["consumption"]:
         st.markdown("**Enajenaciones y consumo PEPS**")
-        cons_rows = [{
-            "Enajenación": c["disposal_id"][:16],
-            "Lote": c["lot_id"][:16],
-            "Unid.": f"{c['units']:.4f}",
-            "Costo COP": _fmt_cop(c["cost_cop"]),
-            "Ganancia COP": "—" if c["gain_cop"] is None else f"{c['gain_cop']:+,.0f}",
-            "Régimen": "Ganancia ocasional (15%)" if c["regime"] == "ganancia_ocasional"
-            else "Renta ordinaria",
-        } for c in built["consumption"]]
-        st.dataframe(pd.DataFrame(cons_rows), hide_index=True, width="stretch")
+        lot_meta = {lot["lot_id"]: lot for lot in built["lots"]}
+        disp_meta = {d["disposal_id"]: d for d in built["disposals"]}
+        cons_rows = []
+        for c in built["consumption"]:
+            lot = lot_meta.get(c["lot_id"], {})
+            disp = disp_meta.get(c["disposal_id"], {})
+            asset = lot.get("asset") or disp.get("asset") or "—"
+            cons_rows.append({
+                "Logo": settings.meta_for(asset).get("logo_url") or "",
+                "Activo": asset,
+                "Adquirido": (str(lot.get("acquired_at", ""))[:10]) or "—",
+                "Vendido": (str(disp.get("disposed_at", ""))[:10]) or "—",
+                "Unid.": f"{c['units']:.4f}",
+                "Costo COP": _fmt_cop(c["cost_cop"]),
+                "Ganancia COP": "—" if c["gain_cop"] is None else f"{c['gain_cop']:+,.0f}",
+                "Régimen": "Ganancia ocasional (15%)" if c["regime"] == "ganancia_ocasional"
+                else "Renta ordinaria",
+            })
+        st.dataframe(
+            pd.DataFrame(cons_rows), hide_index=True, width="stretch",
+            column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+        )
 
     st.caption(
         "Método **PEPS/FIFO** (consume el lote más antiguo). Los cálculos de **tarifa** (15% vs. "

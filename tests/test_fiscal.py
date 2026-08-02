@@ -301,3 +301,22 @@ def test_lot_maturity_soon_alert_fires(conn, settings) -> None:
     assert len(alerts) == 1
     assert alerts[0].rule_id == "lot_maturity_soon"
     assert "BTC" in alerts[0].message
+
+
+def test_build_tax_lots_records_unmatched_sell(conn, settings) -> None:
+    # Sell more than is lotted (rest acquired via Earn/Convert, not in `trades`): the excess is
+    # recorded as `unmatched`, never dropped silently (FISCAL.md §0/§2.3).
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2025-01-01T00:00:00+00:00", 4000.0),
+        _trm("2025-06-01T00:00:00+00:00", 4200.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+        _trade("s1", "sell", "2025-06-01T00:00:00+00:00", 0.02, 63000.0, 1260.0),  # 0.02 > 0.01
+    ]))
+    built = build_tax_lots(conn, settings)
+    assert built["disposals"][0]["unmatched"] == pytest.approx(0.01)   # 0.02 sold − 0.01 lotted
+    d = disposal_summary(conn, settings, built=built)
+    assert len(d["unmatched_events"]) == 1
+    assert d["unmatched_events"][0]["units"] == pytest.approx(0.01)
+    assert d["unmatched_events"][0]["asset"] == "BTC"

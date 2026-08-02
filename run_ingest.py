@@ -234,11 +234,11 @@ def main(argv: list[str] | None = None) -> int:
         # so a fiscal error never fails the ingest pipeline.
         if not args.public and settings.raw.get("fiscal", {}).get("enabled") and not args.only:
             try:
-                from transform.fiscal import persist_tax_lots, persist_thesis_and_ladder
-                c = persist_tax_lots(conn, settings)
+                # Tax lots are computed on demand from `trades` (not persisted). Only the
+                # thesis journal + exit ladder are persisted, since the views read those tables.
+                from transform.fiscal import persist_thesis_and_ladder
                 j = persist_thesis_and_ladder(conn, settings)
-                log.info("Fiscal: %d lots, %d disposals, %d consumption; %d thesis, %d ladder.",
-                         c["lots"], c["disposals"], c["consumption"], j["thesis"], j["ladder"])
+                log.info("Fiscal: %d thesis, %d ladder persisted.", j["thesis"], j["ladder"])
             except Exception:  # noqa: BLE001 — fiscal build must never crash the pipeline
                 log.exception("Fiscal build failed (non-fatal).")
 

@@ -117,11 +117,12 @@ def build_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, li
             unit_proceeds_cop = (
                 proceeds_cop / float(amount) if (proceeds_cop is not None and amount) else None
             )
-            disposals.append({
+            disp = {
                 "disposal_id": str(trade_id), "asset": base, "disposed_at": t.isoformat(),
                 "units": float(amount), "proceeds_usd": proceeds_usd, "trm_disposal": trm_t,
-                "proceeds_cop": proceeds_cop, "kind": "venta",
-            })
+                "proceeds_cop": proceeds_cop, "kind": "venta", "unmatched": 0.0,
+            }
+            disposals.append(disp)
             remaining = float(amount)
             queue = open_lots.setdefault(base, deque())
             while remaining > 1e-12 and queue:
@@ -144,6 +145,10 @@ def build_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, li
                 remaining -= take
                 if lot["units_remaining"] <= 1e-12:
                     queue.popleft()
+            # Units sold beyond any cost lot (e.g. coins from Earn/Convert not in `trades`): their
+            # proceeds have NO frozen cost, so their gain is NOT computed. Recorded, never dropped
+            # silently (FISCAL.md §0 — errors here are high and silent). Surfaced in disposal_summary.
+            disp["unmatched"] = remaining if remaining > 1e-12 else 0.0
 
     return {"lots": lots, "disposals": disposals, "consumption": consumption}
 
@@ -211,16 +216,8 @@ def cop_usd_pnl_table(
     return df
 
 
-def persist_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, int]:
-    """Build and upsert lots/disposals/consumption (idempotent). Returns row counts."""
-    from db.loader import upsert_tax_disposals, upsert_tax_lot_consumption, upsert_tax_lots
-
-    built = build_tax_lots(conn, settings)
-    return {
-        "lots": upsert_tax_lots(conn, built["lots"]),
-        "disposals": upsert_tax_disposals(conn, built["disposals"]),
-        "consumption": upsert_tax_lot_consumption(conn, built["consumption"]),
-    }
+# Note: tax lots/disposals/consumption are computed on demand from `trades` (build_tax_lots)
+# and consumed in memory by the views — they are NOT persisted (the tables had no reader).
 
 
 # --- Fase B: maturation metrics + pre-sale PEPS simulator (FISCAL.md §6.2/§6.3) --------------
@@ -386,8 +383,11 @@ def disposal_summary(
     ``fiscal.habituality.warn_disposals_per_year``. Also surfaces permutas (each a taxable
     event that resets the maturity clock, §7.2) and the realized COP gain of the year.
 
+    ``unmatched_events`` lists disposals that sold more units than were lotted (proceeds with no
+    cost basis — gain not computed; FISCAL.md §0/§2.3).
+
     Returns {year, count, ventas, permutas, threshold, habitual_risk, permuta_events,
-    realized_gain_cop}.
+    realized_gain_cop, unmatched_events}.
     """
     built = built if built is not None else build_tax_lots(conn, settings)
     hab = settings.raw.get("fiscal", {}).get("habituality", {})
@@ -398,6 +398,10 @@ def disposal_summary(
     this_year = [d for d in disposals if str(d["disposed_at"])[:4] == str(year)]
     ventas = [d for d in this_year if d.get("kind") == "venta"]
     permutas = [d for d in this_year if d.get("kind") == "permuta"]
+    unmatched = [
+        {"asset": d["asset"], "date": str(d["disposed_at"])[:10], "units": d["unmatched"]}
+        for d in disposals if d.get("unmatched", 0.0) > 1e-9
+    ]
 
     disp_date = {d["disposal_id"]: d["disposed_at"] for d in disposals}
     realized = sum(
@@ -412,6 +416,7 @@ def disposal_summary(
         "permutas": len(permutas),
         "threshold": threshold,
         "habitual_risk": len(this_year) >= threshold,
+        "unmatched_events": unmatched,
         "permuta_events": permutas,
         "realized_gain_cop": realized,
     }

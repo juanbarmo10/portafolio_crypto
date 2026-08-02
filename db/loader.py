@@ -245,58 +245,15 @@ def upsert_capital_flows(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     return len(records)
 
 
-# --- Colombian tax layer (FISCAL.md) ----------------------------------------
-# Derived, PERSONAL tables built from `trades` + TRM. Idempotent by primary key so a
-# full recompute upserts in place. Never synced to a shared/cloud DB (see run_ingest --public).
-
-TAX_LOT_COLUMNS = [
-    "lot_id", "asset", "acquired_at", "units", "units_remaining", "cost_usd",
-    "trm_acquisition", "cost_cop", "fees_cop", "matures_at", "origin", "source_ref",
-]
-
-_UPSERT_TAX_LOT_SQL = """
-INSERT INTO tax_lots (lot_id, asset, acquired_at, units, units_remaining, cost_usd,
-    trm_acquisition, cost_cop, fees_cop, matures_at, origin, source_ref, ingested_at)
-VALUES (:lot_id, :asset, :acquired_at, :units, :units_remaining, :cost_usd,
-    :trm_acquisition, :cost_cop, :fees_cop, :matures_at, :origin, :source_ref, :ingested_at)
-ON CONFLICT(lot_id) DO UPDATE SET
-    asset = excluded.asset, acquired_at = excluded.acquired_at, units = excluded.units,
-    units_remaining = excluded.units_remaining, cost_usd = excluded.cost_usd,
-    trm_acquisition = excluded.trm_acquisition, cost_cop = excluded.cost_cop,
-    fees_cop = excluded.fees_cop, matures_at = excluded.matures_at, origin = excluded.origin,
-    source_ref = excluded.source_ref, ingested_at = excluded.ingested_at
-"""
-
-TAX_DISPOSAL_COLUMNS = [
-    "disposal_id", "asset", "disposed_at", "units", "proceeds_usd", "trm_disposal",
-    "proceeds_cop", "kind",
-]
-
-_UPSERT_TAX_DISPOSAL_SQL = """
-INSERT INTO tax_disposals (disposal_id, asset, disposed_at, units, proceeds_usd,
-    trm_disposal, proceeds_cop, kind, ingested_at)
-VALUES (:disposal_id, :asset, :disposed_at, :units, :proceeds_usd, :trm_disposal,
-    :proceeds_cop, :kind, :ingested_at)
-ON CONFLICT(disposal_id) DO UPDATE SET
-    asset = excluded.asset, disposed_at = excluded.disposed_at, units = excluded.units,
-    proceeds_usd = excluded.proceeds_usd, trm_disposal = excluded.trm_disposal,
-    proceeds_cop = excluded.proceeds_cop, kind = excluded.kind, ingested_at = excluded.ingested_at
-"""
-
-TAX_CONSUMPTION_COLUMNS = ["disposal_id", "lot_id", "units", "cost_cop", "gain_cop", "regime"]
-
-_UPSERT_TAX_CONSUMPTION_SQL = """
-INSERT INTO tax_lot_consumption (disposal_id, lot_id, units, cost_cop, gain_cop, regime)
-VALUES (:disposal_id, :lot_id, :units, :cost_cop, :gain_cop, :regime)
-ON CONFLICT(disposal_id, lot_id) DO UPDATE SET
-    units = excluded.units, cost_cop = excluded.cost_cop, gain_cop = excluded.gain_cop,
-    regime = excluded.regime
-"""
+# --- Colombian tax layer: thesis journal + exit ladder (FISCAL.md §5) -------
+# PERSONAL, LOCAL only (never synced to a shared/cloud DB). The tax lots/disposals themselves
+# are computed on demand from `trades` (transform/fiscal.py) and not persisted; only these two
+# hand-written journals live in tables, since the views read them back.
 
 
 def _upsert_records(conn: sqlite3.Connection, sql: str, cols: list[str], rows: list[dict],
                     with_ingested: bool, label: str) -> int:
-    """Shared idempotent upsert for the fiscal tables from a list of dict rows."""
+    """Shared idempotent upsert from a list of dict rows (keyed by the table's primary key)."""
     if not rows:
         log.info("No %s to upsert.", label)
         return 0
@@ -311,21 +268,6 @@ def _upsert_records(conn: sqlite3.Connection, sql: str, cols: list[str], rows: l
         conn.executemany(sql, records)
     log.info("Upserted %d %s.", len(records), label)
     return len(records)
-
-
-def upsert_tax_lots(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Idempotently upsert acquisition lots (keyed by lot_id). FISCAL.md."""
-    return _upsert_records(conn, _UPSERT_TAX_LOT_SQL, TAX_LOT_COLUMNS, rows, True, "tax lots")
-
-
-def upsert_tax_disposals(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Idempotently upsert disposals — sells/swaps (keyed by disposal_id). FISCAL.md."""
-    return _upsert_records(conn, _UPSERT_TAX_DISPOSAL_SQL, TAX_DISPOSAL_COLUMNS, rows, True, "tax disposals")
-
-
-def upsert_tax_lot_consumption(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Idempotently upsert PEPS lot-consumption rows (keyed by disposal_id+lot_id). FISCAL.md."""
-    return _upsert_records(conn, _UPSERT_TAX_CONSUMPTION_SQL, TAX_CONSUMPTION_COLUMNS, rows, False, "tax consumption")
 
 
 THESIS_LOG_COLUMNS = [

@@ -1947,6 +1947,14 @@ def _section_fiscal(conn, settings) -> None:
             "**evento gravable** (Art. 90) que **reinicia el reloj de 24 meses** del activo recibido "
             "(FISCAL.md §7.2)."
         )
+    if dsum.get("unmatched_events"):
+        detail = ", ".join(f"{u['units']:.4f} {u['asset']} ({u['date']})" for u in dsum["unmatched_events"])
+        st.warning(
+            f"⚠️ **Ventas sin lote de costo:** {detail}. Vendiste más unidades de las que hay en "
+            "`trades` (probablemente adquiridas por Earn/Convert). Esos ingresos **no tienen costo base** "
+            "→ su ganancia **no se calcula** aquí; regístralos con el contador (valor de mercado a la "
+            "fecha de adquisición). No se descartan en silencio (FISCAL.md §2.3)."
+        )
 
     # COP vs USD PnL — the headline comparison.
     if not df.empty:

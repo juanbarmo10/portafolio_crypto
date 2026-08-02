@@ -163,7 +163,9 @@ def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[
         elif to_a in stables and from_a not in stables:
             symbol, side, amount, cost = f"{from_a}/{to_a}", "sell", from_amt, to_amt
         else:
-            continue  # crypto->crypto or stable->stable: no USD cost basis to derive
+            # crypto->crypto or stable->stable: no USD cost basis to derive here. NOT lotted;
+            # crypto->crypto is a taxable permuta (FISCAL.md §2.2) — counted/warned, not silent.
+            continue
         rows.append(
             {
                 "trade_id": f"binance-convert:{oid}",
@@ -181,6 +183,25 @@ def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[
             }
         )
     return rows
+
+
+def count_unlotted_converts(records: list[dict], stables: set[str] | None = None) -> int:
+    """Count crypto→crypto Converts that :func:`parse_convert` cannot lot (FISCAL.md §2.2).
+
+    A crypto→crypto Convert is a **taxable permuta** (Art. 90 E.T.) that resets the maturity
+    clock but has no USD cost basis in the record itself, so it is not turned into a trade.
+    Counting them lets the pipeline **warn loudly** instead of dropping them in silence — until
+    full lotting (valuing at market + TRM) is built, register these manually with the accountant.
+    """
+    stables = stables or _STABLES
+    n = 0
+    for rec in records:
+        if str(rec.get("orderStatus", "SUCCESS")).upper() != "SUCCESS":
+            continue
+        from_a, to_a = rec.get("fromAsset"), rec.get("toAsset")
+        if from_a and to_a and from_a not in stables and to_a not in stables:
+            n += 1  # both legs are non-stable crypto -> unlotted permuta
+    return n
 
 
 def parse_fiat_flows(
@@ -500,7 +521,15 @@ class BinanceAccountIngester(Ingester):
         spot_n = len(rows)
         try:
             convert_since = self._exchange.milliseconds() - self._account_days * 24 * 3600 * 1000
-            rows.extend(parse_convert(self._fetch_convert_raw(convert_since)))
+            convert_raw = self._fetch_convert_raw(convert_since)
+            rows.extend(parse_convert(convert_raw))
+            n_swaps = count_unlotted_converts(convert_raw)
+            if n_swaps:
+                log.warning(
+                    "Binance: %d crypto→crypto Convert(s) NOT lotted — taxable permutas "
+                    "(FISCAL.md §2.2). Regístralas a mano (valor de mercado + TRM) con el contador.",
+                    n_swaps,
+                )
         except Exception:  # noqa: BLE001 — convert must not sink the spot trades
             log.exception("Binance convert fetch failed")
 

@@ -75,6 +75,7 @@ from transform.indicators import (  # noqa: E402
 from transform.fiscal import (  # noqa: E402
     build_tax_lots,
     cop_usd_pnl_table,
+    disposal_summary,
     maturity_summary,
     simulate_peps_sale,
 )
@@ -1538,6 +1539,13 @@ def _dca_shopping_list_view(conn, settings, holdings) -> None:
         "comprar*; ejecución **manual** (la key de Binance es de solo lectura). Capa 4 (tilt) "
         "desactivada hasta validar."
     )
+    if settings.raw.get("fiscal", {}).get("enabled"):
+        st.caption(
+            "🇨🇴 **Cláusula fiscal (FISCAL.md §7):** rebalancear con el **aporte** (dinero nuevo) "
+            "evita permutas — un swap cripto→cripto es enajenación gravable (Art. 90) y **reinicia el "
+            "reloj de 24 meses**; el aporte logra lo mismo con **cero costo fiscal**. Los activos con "
+            "tesis invalidada (veto 🚫) quedan **excluidos** del reparto."
+        )
     bars = _drift_bar(
         [
             {"asset": i["asset"], "drift": round(i["drift_pp"], 1) if i["drift_pp"] is not None else 0.0}
@@ -1906,8 +1914,8 @@ def _section_fiscal(conn, settings) -> None:
         st.info("Falta la serie TRM. Ejecuta `python run_ingest.py --only trm`.")
         return
 
-    year = datetime.now(timezone.utc).year
-    disposals_year = [d for d in built["disposals"] if str(d["disposed_at"])[:4] == str(year)]
+    dsum = disposal_summary(conn, settings)
+    year = dsum["year"]
     c1, c2, c3 = st.columns(3)
     c1.metric("TRM hoy (COP/USD)", f"{trm_now:,.2f}")
     c2.metric(
@@ -1916,10 +1924,25 @@ def _section_fiscal(conn, settings) -> None:
         "no valor de mercado. Suma del costo congelado de los lotes abiertos.",
     )
     c3.metric(
-        f"Enajenaciones {year}", str(len(disposals_year)),
-        help="Ventas + permutas del año (las compras no cuentan). Un patrón alto puede gatillar "
-        "reclasificación a actividad habitual — ahí la regla de 24 meses no aplica (FISCAL.md §7.3).",
+        f"Enajenaciones {year}", f"{dsum['count']} / {dsum['threshold']}",
+        delta="⚠ riesgo habitual" if dsum["habitual_risk"] else None, delta_color="inverse",
+        help="Ventas + permutas del año (las compras no cuentan) vs. el umbral configurado. Un patrón "
+        "alto puede gatillar reclasificación a **actividad habitual** — ahí la regla de 24 meses no "
+        "aplica en absoluto y todo sería renta ordinaria (FISCAL.md §7.3).",
     )
+    if dsum["habitual_risk"]:
+        st.error(
+            f"⚠️ **{dsum['count']} enajenaciones en {year}** (umbral {dsum['threshold']}): vigila la "
+            "**reclasificación a actividad habitual** — las compras no cuentan, pero ventas y permutas sí. "
+            "Si la DIAN te considera habitual, las cripto pasan a inventario y **pierdes el régimen de "
+            "ganancia ocasional** (FISCAL.md §7.3). Confírmalo con el contador."
+        )
+    if dsum["permuta_events"]:
+        st.warning(
+            f"⚠️ **{len(dsum['permuta_events'])} permuta(s) cripto→cripto** en {year}: cada una es un "
+            "**evento gravable** (Art. 90) que **reinicia el reloj de 24 meses** del activo recibido "
+            "(FISCAL.md §7.2)."
+        )
 
     # COP vs USD PnL — the headline comparison.
     if not df.empty:

@@ -11,6 +11,7 @@ import pytest
 from ingest.binance_account import (
     CAPITAL_FLOW_COLUMNS,
     TRADE_COLUMNS,
+    count_unlotted_converts,
     parse_c2c_orders,
     parse_convert,
     parse_earn,
@@ -74,6 +75,18 @@ def test_parse_convert_buy_sell_and_skips() -> None:
     sell = rows[1]
     assert sell["symbol"] == "BNB/USDT" and sell["side"] == "sell"
     assert sell["amount"] == 0.5 and sell["cost"] == 300.0
+
+
+def test_count_unlotted_converts_flags_crypto_to_crypto() -> None:
+    # Only crypto->crypto counts (a taxable permuta, FISCAL.md §2.2): stable legs are excluded.
+    records = [
+        {"orderStatus": "SUCCESS", "fromAsset": "SOL", "toAsset": "LINK"},   # crypto->crypto ✓
+        {"orderStatus": "SUCCESS", "fromAsset": "USDT", "toAsset": "BTC"},   # buy (stable leg)
+        {"orderStatus": "SUCCESS", "fromAsset": "BTC", "toAsset": "USDT"},   # sell (stable leg)
+        {"orderStatus": "SUCCESS", "fromAsset": "USDT", "toAsset": "USDC"},  # stable->stable
+        {"orderStatus": "PROCESS", "fromAsset": "SOL", "toAsset": "AAVE"},   # not successful
+    ]
+    assert count_unlotted_converts(records) == 1
 
 
 def test_parse_earn_rewards_sums_per_asset() -> None:

@@ -21,6 +21,7 @@ from db.loader import init_db, upsert_observations, upsert_trades
 from transform.fiscal import (
     build_tax_lots,
     cop_usd_pnl_table,
+    disposal_summary,
     maturity_summary,
     simulate_peps_sale,
 )
@@ -188,3 +189,35 @@ def test_simulate_no_price_no_data(conn, settings) -> None:
         _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
     ]))
     assert simulate_peps_sale(conn, settings, "BTC", 0.01)["has_data"] is False
+
+
+# --- Fase C: disposal counter (habitual-activity risk) ----------------------
+
+
+def test_disposal_summary_counts_and_habitual_flag(conn, settings) -> None:
+    settings.raw["fiscal"]["habituality"] = {"warn_disposals_per_year": 2}
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2026-01-01T00:00:00+00:00", 4000.0),
+        _trm("2026-03-01T00:00:00+00:00", 4100.0),
+        _trm("2026-05-01T00:00:00+00:00", 4200.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2026-01-01T00:00:00+00:00", 0.03, 60000.0, 1800.0),
+        _trade("s1", "sell", "2026-03-01T00:00:00+00:00", 0.01, 61000.0, 610.0),
+        _trade("s2", "sell", "2026-05-01T00:00:00+00:00", 0.01, 62000.0, 620.0),
+    ]))
+    d = disposal_summary(conn, settings)
+    assert d["count"] == 2           # two sells this year; buys don't count
+    assert d["ventas"] == 2
+    assert d["threshold"] == 2
+    assert d["habitual_risk"] is True   # count >= threshold
+
+
+def test_disposal_summary_no_disposals(conn, settings) -> None:
+    upsert_observations(conn, pd.DataFrame([_trm("2026-01-01T00:00:00+00:00", 4000.0)]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2026-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+    ]))
+    d = disposal_summary(conn, settings)
+    assert d["count"] == 0
+    assert d["habitual_risk"] is False

@@ -369,3 +369,43 @@ def simulate_peps_sale(
         "tax_total_cop": tax_occ_cop + (tax_ord_cop or 0.0),
         "consumed": consumed,
     }
+
+
+def disposal_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Count this year's disposals and flag habitual-activity risk (FISCAL.md §7.3).
+
+    Sells **and** swaps (permutas) count; buys do not. If the DIAN sees a habitual trading
+    pattern, the crypto becomes **inventory (movable asset)** and the 24-month rule stops
+    applying entirely — so this counter is a prominent guardrail. ``habitual_risk`` trips at
+    ``fiscal.habituality.warn_disposals_per_year``. Also surfaces permutas (each a taxable
+    event that resets the maturity clock, §7.2) and the realized COP gain of the year.
+
+    Returns {year, count, ventas, permutas, threshold, habitual_risk, permuta_events,
+    realized_gain_cop}.
+    """
+    built = build_tax_lots(conn, settings)
+    hab = settings.raw.get("fiscal", {}).get("habituality", {})
+    threshold = int(hab.get("warn_disposals_per_year", 4))
+    year = datetime.now(timezone.utc).year
+
+    disposals = built["disposals"]
+    this_year = [d for d in disposals if str(d["disposed_at"])[:4] == str(year)]
+    ventas = [d for d in this_year if d.get("kind") == "venta"]
+    permutas = [d for d in this_year if d.get("kind") == "permuta"]
+
+    disp_date = {d["disposal_id"]: d["disposed_at"] for d in disposals}
+    realized = sum(
+        c["gain_cop"] for c in built["consumption"]
+        if c["gain_cop"] is not None and str(disp_date.get(c["disposal_id"], ""))[:4] == str(year)
+    )
+
+    return {
+        "year": year,
+        "count": len(this_year),
+        "ventas": len(ventas),
+        "permutas": len(permutas),
+        "threshold": threshold,
+        "habitual_risk": len(this_year) >= threshold,
+        "permuta_events": permutas,
+        "realized_gain_cop": realized,
+    }

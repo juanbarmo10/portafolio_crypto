@@ -228,6 +228,19 @@ def main(argv: list[str] | None = None) -> int:
 
         log.info("Ingest complete: %d observations upserted, %d ingester(s) failed.",
                  total, len(failed))
+
+        # Rebuild the personal tax lots from trades+TRM (FISCAL.md). LOCAL only: never in
+        # --public mode (the shared/cloud DB must not receive personal fiscal data). Isolated
+        # so a fiscal error never fails the ingest pipeline.
+        if not args.public and settings.raw.get("fiscal", {}).get("enabled") and not args.only:
+            try:
+                from transform.fiscal import persist_tax_lots
+                c = persist_tax_lots(conn, settings)
+                log.info("Fiscal: %d lots, %d disposals, %d consumption rows.",
+                         c["lots"], c["disposals"], c["consumption"])
+            except Exception:  # noqa: BLE001 — fiscal build must never crash the pipeline
+                log.exception("Fiscal lot build failed (non-fatal).")
+
         # A parser/scraper breaking (e.g. Farside HTML changing, section 9) is a fail-loud
         # event you want on your phone, not just in a log (D1).
         if failed:

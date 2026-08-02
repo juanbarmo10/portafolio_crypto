@@ -72,6 +72,7 @@ from transform.indicators import (  # noqa: E402
     wallet_pnl_table,
     wallet_value_history,
 )
+from transform.fiscal import build_tax_lots, cop_usd_pnl_table  # noqa: E402
 from validation.backtest import funding_zscore_backtest, signal_battery  # noqa: E402
 from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
 from transform.rally_quality import (  # noqa: E402
@@ -107,6 +108,11 @@ def _fmt_usd(x: float | None) -> str:
 def _fmt_ratio(x: float | None) -> str:
     """Format a plain ratio to two decimals, or an em dash when missing."""
     return "—" if x is None or pd.isna(x) else f"{x:.2f}"
+
+
+def _fmt_cop(x: float | None) -> str:
+    """Format a COP value with thousands separators (no decimals), or an em dash."""
+    return "—" if x is None or pd.isna(x) else f"COP {x:,.0f}"
 
 
 def _fmt_pct0(x: float | None) -> str:
@@ -1874,6 +1880,126 @@ def _battery_result(db_path_str: str, horizon: int) -> dict:
         conn.close()
 
 
+def _section_fiscal(conn, settings) -> None:
+    """Section 6 — Colombian tax layer (FISCAL.md). LOCAL only, hidden under PUBLIC_MODE.
+
+    Shows lots with their frozen COP cost, the COP-vs-USD PnL (a USD loss can be a COP gain),
+    and the fiscal net worth at COST (Art. 74/271). Every figure is an ESTIMATE — the panel
+    estimates, the accountant files (FISCAL.md §0). Tax rates/regimes stay gated behind the
+    accountant questions (§12); this view is the factual cost/PnL layer.
+    """
+    disclaimer = settings.raw.get("fiscal", {}).get(
+        "disclaimer", "ESTIMADO — verificar con contador. No es asesoría tributaria."
+    )
+    st.header("6 · Fiscal (Colombia / DIAN)", anchor="fiscal")
+    st.warning(f"⚠️ **{disclaimer}** El panel estima; el contador liquida.")
+
+    df = cop_usd_pnl_table(conn, settings)
+    built = build_tax_lots(conn, settings)
+    trm_now = df.attrs.get("trm_now")
+    if trm_now is None:
+        st.info("Falta la serie TRM. Ejecuta `python run_ingest.py --only trm`.")
+        return
+
+    year = datetime.now(timezone.utc).year
+    disposals_year = [d for d in built["disposals"] if str(d["disposed_at"])[:4] == str(year)]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("TRM hoy (COP/USD)", f"{trm_now:,.2f}")
+    c2.metric(
+        "Patrimonio a costo", _fmt_cop(df.attrs.get("patrimonio_cop")),
+        help="Valor patrimonial fiscal = **costo** de adquisición en COP (Art. 74/271 E.T.), "
+        "no valor de mercado. Suma del costo congelado de los lotes abiertos.",
+    )
+    c3.metric(
+        f"Enajenaciones {year}", str(len(disposals_year)),
+        help="Ventas + permutas del año (las compras no cuentan). Un patrón alto puede gatillar "
+        "reclasificación a actividad habitual — ahí la regla de 24 meses no aplica (FISCAL.md §7.3).",
+    )
+
+    # COP vs USD PnL — the headline comparison.
+    if not df.empty:
+        st.markdown("**PnL no realizado — COP vs USD** (¿tus posiciones rojas en USD lo están en COP?)")
+        show = pd.DataFrame({
+            "Logo": [settings.meta_for(a).get("logo_url") or "" for a in df["asset"]],
+            "Activo": df["asset"],
+            "Costo USD": df["cost_usd"].map(_fmt_usd),
+            "Valor USD": df["value_usd"].map(_fmt_usd),
+            "PnL USD": df["pnl_usd"].map(lambda x: f"{x:+,.0f}"),
+            "Costo COP": df["cost_cop"].map(_fmt_cop),
+            "Valor COP": df["value_cop"].map(_fmt_cop),
+            "PnL COP": df["pnl_cop"].map(lambda x: "—" if pd.isna(x) else f"{x:+,.0f}"),
+        })
+        st.dataframe(
+            show.style.map(_color_by_sign, subset=["PnL USD", "PnL COP"]),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
+                "PnL COP": st.column_config.TextColumn(
+                    help="La cifra que importa fiscalmente. Puede tener **signo distinto** al PnL USD "
+                    "si el peso se movió entre la compra y hoy (Art. 269: costo congelado a la TRM del día)."
+                ),
+            },
+        )
+        st.caption(
+            "Costo COP **congelado** a la TRM del día de compra (Art. 269 E.T.); valor COP = precio "
+            "actual (CoinGecko) × TRM de hoy. La ganancia/pérdida fiscal se mide en **COP**, no en USD."
+        )
+
+    # Lots with their frozen cost and maturity.
+    lots = [lot for lot in built["lots"] if lot["units_remaining"] > 1e-9]
+    if lots:
+        st.markdown("**Lotes de adquisición** (costo fiscal congelado, maduración a 24 meses)")
+        today = datetime.now(timezone.utc)
+        lot_rows = []
+        for lot in lots:
+            matures = pd.Timestamp(lot["matures_at"]).to_pydatetime()
+            days = (matures - today).days
+            lot_rows.append({
+                "Logo": settings.meta_for(lot["asset"]).get("logo_url") or "",
+                "Activo": lot["asset"],
+                "Adquirido": str(lot["acquired_at"])[:10],
+                "Unid. rest.": f"{lot['units_remaining']:.4f}",
+                "TRM compra": "—" if lot["trm_acquisition"] is None else f"{lot['trm_acquisition']:,.2f}",
+                "Costo COP": _fmt_cop(lot["cost_cop"]),
+                "Madura": str(lot["matures_at"])[:10],
+                "Estado": "✅ ocasional" if days <= 0 else f"⏳ {days} d",
+            })
+        st.dataframe(
+            pd.DataFrame(lot_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
+                "Estado": st.column_config.TextColumn(
+                    help="✅ ya cumplió 24 meses → ganancia ocasional (15%). ⏳ = días para madurar; "
+                    "vender antes tributa como renta ordinaria (progresiva, hasta 39%)."
+                ),
+            },
+        )
+
+    # Disposals (sells/swaps) with their PEPS regime split, if any.
+    if built["consumption"]:
+        st.markdown("**Enajenaciones y consumo PEPS**")
+        cons_rows = [{
+            "Enajenación": c["disposal_id"][:16],
+            "Lote": c["lot_id"][:16],
+            "Unid.": f"{c['units']:.4f}",
+            "Costo COP": _fmt_cop(c["cost_cop"]),
+            "Ganancia COP": "—" if c["gain_cop"] is None else f"{c['gain_cop']:+,.0f}",
+            "Régimen": "Ganancia ocasional (15%)" if c["regime"] == "ganancia_ocasional"
+            else "Renta ordinaria",
+        } for c in built["consumption"]]
+        st.dataframe(pd.DataFrame(cons_rows), hide_index=True, width="stretch")
+
+    st.caption(
+        "Método **PEPS/FIFO** (consume el lote más antiguo). Los cálculos de **tarifa** (15% vs. "
+        "progresiva), UVT y exenciones están **pendientes de confirmar con el contador** (FISCAL.md "
+        "§12) y no se muestran como impuesto. Permutas cripto→cripto vía Convert no llegan a `trades` "
+        "hoy (punto ciego, FISCAL.md §2.2)."
+    )
+
+
 def _section_validation(settings) -> None:
     """Read-only showcase of the honest signal-validation table (sección 8, sección 13 #4).
 
@@ -2069,6 +2195,8 @@ def _sidebar_nav(settings) -> None:
     ]
     if not settings.public_mode:
         checklist.append(("5 · Ejecución", "ejecucion"))
+        if settings.raw.get("fiscal", {}).get("enabled"):
+            checklist.append(("6 · Fiscal", "fiscal"))
     with st.sidebar:
         st.markdown("### Navegación")
         st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in checklist))
@@ -2119,6 +2247,9 @@ def main() -> None:
         else:
             st.divider()
             _section_execution(conn, settings)
+            if settings.raw.get("fiscal", {}).get("enabled"):
+                st.divider()
+                _section_fiscal(conn, settings)
         st.divider()
         _section_validation(settings)
     finally:

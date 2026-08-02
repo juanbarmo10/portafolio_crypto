@@ -81,12 +81,19 @@ sources:
     # not as ETH. The coingecko ingester fetches these ids too.
     price_aliases:
       WBETH: wrapped-beacon-eth
+      # BNSOL is Binance liquid-staked SOL; it trades ABOVE SOL (accrued staking rewards),
+      # so it gets its OWN price, not SOL's. Without this it shows no price and vanishes
+      # from value/drift/risk/PnL (INVERSOR_IDEAS §2.2).
+      BNSOL: binance-staked-sol
     # Classify a held-but-untracked symbol UNDER a tracked symbol for ALLOCATION grouping
     # (tier + thesis category), while keeping its OWN price above. WBETH is wrapped/staked
     # ETH, so it counts as ETH (núcleo) in the drift-vs-objetivo and allocation donuts —
     # not as "Sin tramo"/"Otros". This is classification only, never price (§ IDEAS_MEJORAS B4).
     symbol_aliases:
       WBETH: ETH
+      # BNSOL counts as SOL for tramo/drift/riesgo (the second line INVERSOR_IDEAS §2.2 requires:
+      # own price above, but grouped as SOL so it doesn't fall in "Sin tramo" and skew drift).
+      BNSOL: SOL
     # `manual_holdings` (real positions the read-only key can't see) is PERSONAL data and
     # must NOT live in this tracked/public file. Put it in the gitignored
     # `config/settings.local.yaml` (template: `config/settings.local.yaml.example`), which

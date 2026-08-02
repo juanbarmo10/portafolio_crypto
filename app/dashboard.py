@@ -79,6 +79,7 @@ from transform.fiscal import (  # noqa: E402
     exit_ladder_table,
     form160_check,
     maturity_summary,
+    short_term_disposals,
     simulate_peps_sale,
     thesis_log_table,
 )
@@ -1177,13 +1178,18 @@ def _fmt_amount(a: float | None) -> str:
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
-def _section_execution(conn, settings) -> None:
-    """Level 4 — real account (read-only) + DCA plan."""
+def _section_execution(conn, settings, holdings=None, built=None) -> None:
+    """Level 4 — real account (read-only) + DCA plan.
+
+    ``holdings``/``built`` may be passed in (computed once in ``main``) to avoid recomputing the
+    tax lots; both are computed on demand if omitted.
+    """
     st.header("5 · Ejecución — cartera real y plan DCA", anchor="ejecucion")
 
     # --- Real account (read-only Binance sync) -------------------------------
     st.subheader("Cartera real (Binance, solo lectura)")
-    holdings = holdings_table(conn, settings)
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
     if holdings.empty:
         st.info(
             "Cuenta no conectada. Crea una API key **de solo lectura** en Binance "
@@ -1213,37 +1219,51 @@ def _section_execution(conn, settings) -> None:
                     )
                 ),
             )
-        show = pd.DataFrame(
-            {
-                "Logo": [settings.meta_for(a).get("logo_url") or "" for a in holdings["asset"]],
-                "Activo": holdings["asset"],
-                "Cantidad": holdings["amount"].map(_fmt_amount),
-                "Precio": holdings["price_usd"].map(_fmt_usd),
-                "Valor": holdings["value_usd"].map(_fmt_usd),
-                "Peso": holdings["weight_pct"].map(
-                    lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
-                ),
-                "Peso sin efectivo": holdings["weight_ex_cash_pct"].map(
-                    lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
-                ),
-                "Nota": holdings["note"],
-            }
-        )
-        st.dataframe(
-            show,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Logo": st.column_config.ImageColumn("", width="small"),
-                "Peso": st.column_config.TextColumn(
-                    help="Peso sobre el **valor total** de la cartera (efectivo incluido)."
-                ),
-                "Peso sin efectivo": st.column_config.TextColumn(
-                    help="Peso sobre el **capital invertido** (excluye stablecoins/efectivo): cuánto "
-                    "pesa el token frente a los demás tokens, ignorando la caja. El efectivo muestra —."
-                ),
-            },
-        )
+        cols = {
+            "Logo": [settings.meta_for(a).get("logo_url") or "" for a in holdings["asset"]],
+            "Activo": holdings["asset"],
+            "Cantidad": holdings["amount"].map(_fmt_amount),
+            "Precio": holdings["price_usd"].map(_fmt_usd),
+            "Valor": holdings["value_usd"].map(_fmt_usd),
+            "Peso": holdings["weight_pct"].map(
+                lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
+            ),
+            "Peso sin efectivo": holdings["weight_ex_cash_pct"].map(
+                lambda w: "—" if w is None or pd.isna(w) else f"{w:.1f}%"
+            ),
+        }
+        column_config = {
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Peso": st.column_config.TextColumn(
+                help="Peso sobre el **valor total** de la cartera (efectivo incluido)."
+            ),
+            "Peso sin efectivo": st.column_config.TextColumn(
+                help="Peso sobre el **capital invertido** (excluye stablecoins/efectivo): cuánto "
+                "pesa el token frente a los demás tokens, ignorando la caja. El efectivo muestra —."
+            ),
+        }
+        # "Madura en": days until the next lot crosses 24 months — 15% vs. up-to-39% tax
+        # (INVERSOR_IDEAS §4.2, the column with the most money per pixel). Fiscal-gated.
+        if built is not None:
+            aliases = settings.source("binance_account").get("symbol_aliases", {}) or {}
+            mat = maturity_summary(conn, settings, built=built)
+            days_by = {r["asset"]: r["days_to_next"] for r in mat.to_dict("records")}
+
+            def _mat_cell(asset: str) -> str:
+                key = aliases.get(asset, asset)
+                if key not in days_by:
+                    return "—"
+                d = days_by[key]
+                return "madurado ✓" if d is None else f"{d} d"
+
+            cols["Madura en"] = [_mat_cell(a) for a in holdings["asset"]]
+            column_config["Madura en"] = st.column_config.TextColumn(
+                help="Días hasta que el próximo lote cumple 24 meses (venta pasa de tu marginal, "
+                "hasta 39%, al 15% de ganancia ocasional). `madurado ✓` = ya lo cumplió. ESTIMADO."
+            )
+        cols["Nota"] = holdings["note"]
+        show = pd.DataFrame(cols)
+        st.dataframe(show, hide_index=True, width="stretch", column_config=column_config)
         wallets = ", ".join(settings.source("binance_account").get("wallets", ["spot"]))
         st.caption(
             f"Balances sumados entre wallets: **{wallets}** (config `binance_account.wallets`; "
@@ -1896,13 +1916,14 @@ def _battery_result(db_path_str: str, horizon: int) -> dict:
         conn.close()
 
 
-def _section_fiscal(conn, settings) -> None:
+def _section_fiscal(conn, settings, built=None) -> None:
     """Section 6 — Colombian tax layer (RESEARCH.md §17). LOCAL only, hidden under PUBLIC_MODE.
 
     Shows lots with their frozen COP cost, the COP-vs-USD PnL (a USD loss can be a COP gain),
     and the fiscal net worth at COST (Art. 74/271). Every figure is an ESTIMATE — the panel
     estimates, the accountant files (RESEARCH.md §17). Tax rates/regimes stay gated behind the
-    accountant questions (§12); this view is the factual cost/PnL layer.
+    accountant questions (§12); this view is the factual cost/PnL layer. ``built`` may be passed
+    in (computed once in ``main``) to avoid recomputing the tax lots.
     """
     disclaimer = settings.raw.get("fiscal", {}).get(
         "disclaimer", "ESTIMADO — verificar con contador. No es asesoría tributaria."
@@ -1911,7 +1932,8 @@ def _section_fiscal(conn, settings) -> None:
     st.warning(f"⚠️ **{disclaimer}** El panel estima; el contador liquida.")
 
     # Build the lots once and thread through every fiscal view (avoids ~5 recomputations).
-    built = build_tax_lots(conn, settings)
+    if built is None:
+        built = build_tax_lots(conn, settings)
     df = cop_usd_pnl_table(conn, settings, built=built)
     trm_now = df.attrs.get("trm_now")
     if trm_now is None:
@@ -2385,6 +2407,256 @@ def _source_discrepancy_view(settings) -> None:
     )
 
 
+# --- "Hoy" landing: metrics + attention tray + per-asset drift (INVERSOR_IDEAS §2-4, §6) -----
+
+# Attention severity -> (colored-markdown color, emoji bullet). Highest first.
+_ATTN_STYLE = {3: ("red", "🔴"), 2: ("orange", "🟠"), 1: ("blue", "🔵")}
+
+# Fiat balances (not stablecoins): unpriced by design, they are cash-like, NOT a missing
+# price_alias. Excluded from the "sin precio" attention item so it doesn't cry wolf on fiat.
+_FIAT = {"USD", "COP", "EUR", "GBP", "BRL", "ARS", "MXN", "TRY", "NGN", "ZAR", "AUD", "CAD",
+         "CHF", "JPY", "PEN", "CLP", "UAH", "INR"}
+
+
+def _attention_items(conn, settings, holdings, built) -> list[dict]:
+    """Consolidate the panel's *actionable* signals into one list (INVERSOR_IDEAS §4.1).
+
+    Pure composition of things the panel already computes — no new signals, no *timing*/price
+    calls (§2). Each item is ``{sev, text}`` (sev 3 red / 2 amber / 1 info). Fiscal-derived items
+    only appear when the fiscal layer is enabled (``built`` is not None). This is the tray that
+    turns 23 tables into a short list of things to do.
+    """
+    items: list[dict] = []
+    aliases = settings.source("binance_account").get("symbol_aliases", {}) or {}
+
+    # --- Cartera: held tokens with no price (e.g. an unaliased staking wrapper) --------------
+    # Fiat is cash-like, not a price_alias case — excluded. Remaining unpriced tokens are
+    # consolidated into ONE line (materiality is unknown without a price; avoid crying wolf).
+    if not holdings.empty:
+        unpriced = sorted({
+            r["asset"] for r in holdings.to_dict("records")
+            if not r["is_cash"] and r["asset"] not in _FIAT
+            and (r["price_usd"] is None or pd.isna(r["price_usd"]))
+        })
+        if unpriced:
+            items.append({
+                "sev": 2,
+                "text": f"{len(unpriced)} posición(es) sin precio: **{', '.join(unpriced)}** → no "
+                        "cuentan en valor, drift, riesgo ni PnL. Añade un `price_alias` si es "
+                        "material (INVERSOR_IDEAS §2.2).",
+            })
+
+    # --- Drift: tramo fuera de banda (B4) ---------------------------------------------------
+    drift = drift_vs_target(conn, settings, holdings)
+    band = settings.raw.get("portfolio", {}).get("drift_band_pp", 5)
+    for r in ([] if drift.empty else drift.to_dict("records")):
+        if r.get("over_band"):
+            items.append({
+                "sev": 2,
+                "text": f"Tramo **{r['tier_label']}** fuera de banda: {r['drift_pp']:+.1f} pp "
+                        f"(±{band} pp). Rebalancea con el aporte, no vendiendo.",
+            })
+
+    # --- Tesis en rojo, solo para lo que tienes ---------------------------------------------
+    held = {aliases.get(a, a) for a, c in zip(holdings["asset"], holdings["is_cash"]) if not c} \
+        if not holdings.empty else set()
+    inval = thesis_invalidation_table(conn, settings)
+    for r in ([] if inval.empty else inval.to_dict("records")):
+        if r["status"] == "red" and r["symbol"] in held:
+            items.append({"sev": 3, "text": f"Tesis en rojo: **{r['symbol']}** — {r['reason']}."})
+
+    # --- Eventos: release macro / FOMC ≤7 d (nivel 1) ---------------------------------------
+    today = datetime.now(timezone.utc).date()
+    for e in upcoming_events(conn, within_days=7, categories=("macro",)):
+        items.append({
+            "sev": 2,
+            "text": f"**{e['label']}** en {e['days_until']} d — considera posponer el tramo (nivel 1).",
+        })
+    for raw in settings.raw.get("macro_calendar", {}).get("fomc_dates", []) or []:
+        try:
+            d = datetime.strptime(str(raw), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if 0 <= (d - today).days <= 7:
+            items.append({
+                "sev": 2,
+                "text": f"**FOMC** en {(d - today).days} d — decisión de tipos (nivel 1).",
+            })
+
+    # --- Fiscal (solo con capa fiscal activa) -----------------------------------------------
+    if built is not None:
+        stw = short_term_disposals(conn, settings, built=built)
+        if stw["last"] is not None:
+            last = stw["last"]
+            more = f" ({stw['count']} en total este año)" if stw["count"] > 1 else ""
+            items.append({
+                "sev": 3,
+                "text": f"Venta <24m este año: **{last['asset']}**, {last['holding_days']} días de "
+                        f"tenencia → renta ordinaria (no el 15% de ganancia ocasional){more}.",
+            })
+        disp = disposal_summary(conn, settings, built=built)
+        if disp["habitual_risk"]:
+            items.append({
+                "sev": 3,
+                "text": f"Enajenaciones {disp['count']}/{disp['threshold']} este año → **riesgo de "
+                        "actividad habitual**: la cripto pasaría a inventario y se pierde la regla de 24m.",
+            })
+        elif disp["count"] >= disp["threshold"] - 1:
+            items.append({
+                "sev": 2,
+                "text": f"Enajenaciones {disp['count']}/{disp['threshold']} este año — cerca del umbral "
+                        "de actividad habitual.",
+            })
+        for ev in disp["unmatched_events"]:
+            items.append({
+                "sev": 2,
+                "text": f"Venta sin lote de costo: **{ev['asset']}** {ev['units']:.4f} — su ganancia no "
+                        "se calcula aquí (registra el coste con el contador).",
+            })
+        mat = maturity_summary(conn, settings, built=built)
+        for r in ([] if mat.empty else mat.to_dict("records")):
+            d = r["days_to_next"]
+            if d is not None and 0 <= d <= 60:
+                items.append({
+                    "sev": 2,
+                    "text": f"Lote de **{r['asset']}** a {d} d de cumplir 24 meses — vender después "
+                            "tributa al 15% en vez de tu marginal.",
+                })
+
+    items.sort(key=lambda it: (-it["sev"], it["text"]))
+    return items
+
+
+def _asset_drift_chart(df: pd.DataFrame, band: float):
+    """Diverging horizontal bars of per-asset drift (current − target, pp) — INVERSOR_IDEAS §6#2.
+
+    Answers *"¿a qué le echo el aporte?"* at a glance: the most negative bar is the most
+    under-weight, targeted position. Rebalancing view, never *timing* (§2). None if empty.
+    """
+    if df.empty:
+        return None
+    rows = [
+        {"asset": r["asset"], "drift": round(float(r["drift_pp"]), 2),
+         "signo": "Infra-ponderado" if r["drift_pp"] < 0 else "Sobre-ponderado"}
+        for r in df.to_dict("records")
+    ]
+    data = alt.Data(values=rows)
+    order = [r["asset"] for r in sorted(rows, key=lambda x: x["drift"])]
+    bars = alt.Chart(data).mark_bar().encode(
+        x=alt.X("drift:Q", title="Drift (pp) — actual − objetivo"),
+        y=alt.Y("asset:N", title=None, sort=order),
+        color=alt.Color(
+            "signo:N",
+            scale=alt.Scale(domain=["Infra-ponderado", "Sobre-ponderado"], range=["#2563eb", "#f59e0b"]),
+            legend=alt.Legend(title=None, orient="bottom"),
+        ),
+        tooltip=[alt.Tooltip("asset:N", title="Activo"), alt.Tooltip("drift:Q", title="Drift (pp)")],
+    )
+    band_rule = alt.Chart(alt.Data(values=[{"v": -band}, {"v": band}])).mark_rule(
+        color="#9ca3af", strokeDash=[4, 3]
+    ).encode(x="v:Q")
+    zero = alt.Chart(alt.Data(values=[{"v": 0}])).mark_rule(color="#6b7280").encode(x="v:Q")
+    return (bars + band_rule + zero).properties(height=min(60 + 24 * len(rows), 420))
+
+
+def _section_today(conn, settings, holdings, built) -> None:
+    """"Hoy" — the weekly landing (INVERSOR_IDEAS §3-4, §6): value, PnL (USD+COP), deployment
+    progress, an attention tray, and per-asset drift. Local-only (reads the real account).
+
+    Does **not** violate §2: the *deploy-capital* decision still walks the checklist 1→4 below,
+    in order. This is the "¿cómo voy / algo requiere atención?" job, which is portfolio-first by
+    design. No *timing*/price signal lives here (INVERSOR_IDEAS §3.1).
+    """
+    st.header("Hoy", anchor="hoy")
+    if holdings.empty:
+        st.info(
+            "Cuenta no conectada. Crea una API key **de solo lectura** en Binance y ejecuta "
+            "`python run_ingest.py` para ver aquí valor, PnL y lo que requiere atención."
+        )
+        return
+    st.caption(
+        "Lo que revisas cada semana. La decisión de **desplegar capital** recorre el checklist "
+        "1→4 más abajo, en orden (sección 2). Aquí no hay señal de *timing*."
+    )
+
+    total = holdings.attrs.get("total_value_usd", 0.0)
+    cash = holdings.attrs.get("cash_usd", 0.0)
+    cash_pct = (cash / total * 100.0) if total else 0.0
+
+    # PnL: unrealized, on open lots, COP vs USD side by side (§4.3). USD-only fallback w/o fiscal.
+    pnl_usd = pnl_cop = None
+    if built is not None:
+        pnl = cop_usd_pnl_table(conn, settings, built=built)
+        if not pnl.empty:
+            pnl_usd = float(pnl["pnl_usd"].sum())
+            pnl_cop = float(pnl["pnl_cop"].sum())
+    if pnl_usd is None:
+        wp = wallet_pnl_table(conn, settings, holdings)
+        pnl_usd = wp.attrs.get("total_pnl_usd") if not wp.empty else None
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Valor cartera", _fmt_usd(total))
+    m2.metric(
+        "PnL no realizado (USD)",
+        _fmt_signed_usd(pnl_usd) if pnl_usd is not None else "—",
+        help="Valor actual − coste, sobre los lotes abiertos.",
+    )
+    m3.metric(
+        "PnL no realizado (COP)",
+        _fmt_cop(pnl_cop) if pnl_cop is not None else "—",
+        help="Mismo PnL en pesos (coste congelado a la TRM de compra, Art. 269). Puede diferir de "
+        "signo con el USD si el peso se movió (INVERSOR_IDEAS §4.3). ESTIMADO.",
+    )
+    m4.metric("Caja", f"{cash_pct:.1f}%", help=f"Stablecoins como % del valor total ({_fmt_usd(cash)}).")
+
+    # Deployment progress: cash toward its target (§6#7). Rebalance by adding, not by timing.
+    target_cash = float(settings.raw.get("portfolio", {}).get("target_weights_asset", {}).get("CASH", 5))
+    invested_pct = 100.0 - cash_pct
+    target_invested = 100.0 - target_cash
+    prog = min(invested_pct / target_invested, 1.0) if target_invested > 0 else 0.0
+    st.progress(
+        prog,
+        text=f"Despliegue: {invested_pct:.0f}% invertido · objetivo {target_invested:.0f}% "
+        f"(caja {cash_pct:.1f}% → {target_cash:.0f}%)",
+    )
+
+    # Attention tray (§4.1) — the highest-return piece: one list of things to do.
+    st.subheader("Requiere atención")
+    items = _attention_items(conn, settings, holdings, built)
+    if not items:
+        st.success("Nada requiere atención esta semana según las reglas escritas.")
+    else:
+        with st.container(border=True):
+            for it in items:
+                color, bullet = _ATTN_STYLE[it["sev"]]
+                st.markdown(f":{color}[{bullet} {it['text']}]")
+        st.caption(
+            "Consolidado de fiscal, drift, tesis y eventos — todo ya se calculaba, disperso en 6 "
+            "secciones. No es *timing*: son avisos de disciplina y de rebalanceo (sección 2)."
+        )
+
+    # Per-asset drift (§6#2): ¿a qué le echo el aporte?
+    da = drift_vs_target_asset(conn, settings, holdings)
+    band = float(settings.raw.get("portfolio", {}).get("drift_band_pp", 5))
+    chart = _asset_drift_chart(da, band)
+    if chart is not None:
+        st.subheader("¿A qué le echo el aporte? — drift por activo")
+        st.altair_chart(chart, width="stretch")
+        most = da.attrs.get("most_underweight")
+        st.caption(
+            (f"Más infra-ponderado: **{most}** → ahí va el aporte (rebalanceo por aportación). "
+             if most else "")
+            + "Líneas punteadas = banda ±{:.0f} pp. Es una vista de *rebalanceo*, no de *timing* "
+            "(sección 2).".format(band)
+        )
+
+    # Régimen en una línea (el detalle vive en su sección, abajo).
+    r = regime_scoreboard(conn, settings)
+    if r.get("has_data"):
+        icon, text = _REGIME_STYLE[r["label"]]
+        st.caption(f"Régimen (niveles 1+2): {icon} **{text}** · score {r['score']:+d} — detalle abajo.")
+
+
 def _sidebar_nav(settings) -> None:
     """Anchor navigation to jump between sections.
 
@@ -2392,7 +2664,10 @@ def _sidebar_nav(settings) -> None:
     (macro overrides thesis) is always visible. The level-4 link is hidden in public mode,
     where that section is not rendered.
     """
-    checklist = [
+    checklist = []
+    if not settings.public_mode:
+        checklist.append(("🏠 Hoy", "hoy"))
+    checklist += [
         ("Régimen de mercado", "regimen"),
         ("1 · Macro", "macro"),
         ("2 · Radar", "radar"),
@@ -2406,10 +2681,13 @@ def _sidebar_nav(settings) -> None:
     with st.sidebar:
         st.markdown("### Navegación")
         st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in checklist))
-        st.caption("Niveles 1→4 en orden (sección 2): el macro manda sobre la tesis del activo.")
+        st.caption(
+            "**Hoy** = consulta semanal (cartera primero). El checklist 1→4 es el orden de una "
+            "*decisión de compra* (sección 2): el macro manda sobre la tesis del activo."
+        )
         st.divider()
         st.markdown(
-            "**Extra**\n\n- [Próximos 7 días](#eventos)\n- [Validación de señales](#validacion)"
+            "**Extra**\n\n- [Próximos 7 días](#eventos)\n- [Método — validación](#validacion)"
         )
 
 
@@ -2433,6 +2711,18 @@ def main() -> None:
             "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
             "Frecuencia de consulta óptima: semanal (sección 2)."
         )
+        # Level 4 exposes the real Binance account — never on a public deploy. Compute the
+        # holdings and tax lots ONCE and thread them into "Hoy", Ejecución and Fiscal so
+        # build_tax_lots (the expensive step) runs a single time per render.
+        local = not settings.public_mode
+        fiscal_on = local and bool(settings.raw.get("fiscal", {}).get("enabled"))
+        holdings = holdings_table(conn, settings) if local else pd.DataFrame()
+        built = build_tax_lots(conn, settings) if fiscal_on else None
+
+        if local:
+            _section_today(conn, settings, holdings, built)
+            st.divider()
+
         _section_regime(conn, settings)
         _events_strip(conn, settings)
         st.divider()
@@ -2443,8 +2733,7 @@ def main() -> None:
         _section_market_structure(conn, settings)
         st.divider()
         _section_thesis(conn, settings)
-        # Level 4 exposes the real Binance account — never on a public deploy.
-        if settings.public_mode:
+        if not local:
             st.divider()
             st.caption(
                 "🔒 Vista pública: la sección de cartera real (nivel 4) está oculta. "
@@ -2452,12 +2741,14 @@ def main() -> None:
             )
         else:
             st.divider()
-            _section_execution(conn, settings)
-            if settings.raw.get("fiscal", {}).get("enabled"):
+            _section_execution(conn, settings, holdings=holdings, built=built)
+            if fiscal_on:
                 st.divider()
-                _section_fiscal(conn, settings)
+                _section_fiscal(conn, settings, built=built)
+        # Método (validación / FDR / discrepancia): showcase, no decisión → al final, plegado.
         st.divider()
-        _section_validation(settings)
+        with st.expander("📊 Método — validación de señales (showcase, no es decisión)"):
+            _section_validation(settings)
     finally:
         conn.close()
 

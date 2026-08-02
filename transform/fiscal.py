@@ -422,6 +422,62 @@ def disposal_summary(
     }
 
 
+def short_term_disposals(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> dict[str, Any]:
+    """This-year disposals that fell into **renta ordinaria** (held < ``long_term_months``).
+
+    The behavioral mirror (INVERSOR_IDEAS §2.1): a coin sold before the 24-month mark forfeits
+    the *ganancia ocasional* 15% flat and is taxed at your marginal rate (up to 39%). Each such
+    sale is exactly the over-trading the whole project exists to prevent (§2) — so the panel
+    surfaces it, not as a scold but as a mirror. Holding period is measured lot-by-lot (PEPS):
+    the shortest consumed lot drives ``holding_days`` (the most damning number).
+
+    Returns {count, gain_cop, days_to_long_term, last: {asset, date, holding_days, gain_cop} |
+    None}. ``count`` = number of this-year disposals with any renta-ordinaria consumption;
+    ``gain_cop`` = their summed ordinary COP gain; ``last`` = the most recent one.
+    """
+    built = built if built is not None else build_tax_lots(conn, settings)
+    months = int(settings.raw.get("fiscal", {}).get("long_term_months", 24))
+    year = datetime.now(timezone.utc).year
+
+    acquired_by_lot = {lot["lot_id"]: lot["acquired_at"] for lot in built["lots"]}
+    disp_by_id = {d["disposal_id"]: d for d in built["disposals"]}
+
+    # Group renta-ordinaria consumption rows by disposal (this year only).
+    per_disposal: dict[str, dict[str, Any]] = {}
+    for c in built["consumption"]:
+        if c["regime"] != "renta_ordinaria":
+            continue
+        disp = disp_by_id.get(c["disposal_id"])
+        if disp is None or str(disp["disposed_at"])[:4] != str(year):
+            continue
+        acquired = acquired_by_lot.get(c["lot_id"])
+        if acquired is None:
+            continue
+        held_days = int((pd.Timestamp(disp["disposed_at"]) - pd.Timestamp(acquired)).days)
+        agg = per_disposal.setdefault(
+            c["disposal_id"],
+            {"asset": disp["asset"], "date": str(disp["disposed_at"])[:10],
+             "disposed_at": disp["disposed_at"], "holding_days": held_days, "gain_cop": 0.0},
+        )
+        agg["holding_days"] = min(agg["holding_days"], held_days)  # shortest lot = worst case
+        if c["gain_cop"] is not None:
+            agg["gain_cop"] += c["gain_cop"]
+
+    events = list(per_disposal.values())
+    last = max(events, key=lambda e: e["disposed_at"]) if events else None
+    return {
+        "count": len(events),
+        "gain_cop": float(sum(e["gain_cop"] for e in events)),
+        "days_to_long_term": months * 30,  # informational: how far a fresh buy is from the 15% rate
+        "last": None if last is None else {
+            "asset": last["asset"], "date": last["date"],
+            "holding_days": last["holding_days"], "gain_cop": last["gain_cop"],
+        },
+    }
+
+
 # --- Fase D: thesis journal + exit ladder (RESEARCH.md §17) --------------------------------------
 
 

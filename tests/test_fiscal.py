@@ -11,6 +11,7 @@ gitignored settings.local.yaml (CI has none).
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,7 @@ from transform.fiscal import (
     form160_check,
     maturity_summary,
     persist_thesis_and_ladder,
+    short_term_disposals,
     simulate_peps_sale,
     thesis_log_table,
 )
@@ -320,3 +322,41 @@ def test_build_tax_lots_records_unmatched_sell(conn, settings) -> None:
     assert len(d["unmatched_events"]) == 1
     assert d["unmatched_events"][0]["units"] == pytest.approx(0.01)
     assert d["unmatched_events"][0]["asset"] == "BTC"
+
+
+# --- short_term_disposals: the behavioral mirror (INVERSOR_IDEAS §2.1) -----------------------
+
+
+def test_short_term_disposals_flags_recent_sell(conn, settings) -> None:
+    # Bought and sold within days, THIS year: renta ordinaria, holding_days measured lot-by-lot.
+    year = datetime.now(timezone.utc).year
+    upsert_observations(conn, pd.DataFrame([
+        _trm(f"{year}-07-28T00:00:00+00:00", 4000.0),
+        _trm(f"{year}-07-30T00:00:00+00:00", 4000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", f"{year}-07-28T00:00:00+00:00", 0.01, 60000.0, 600.0),
+        _trade("s1", "sell", f"{year}-07-30T00:00:00+00:00", 0.01, 63000.0, 630.0),
+    ]))
+    out = short_term_disposals(conn, settings)
+    assert out["count"] == 1
+    assert out["last"]["asset"] == "BTC"
+    assert out["last"]["holding_days"] == 2                    # 28 -> 30 July
+    assert out["last"]["gain_cop"] == pytest.approx((630.0 - 600.0) * 4000.0)  # +120,000 COP
+    assert out["gain_cop"] == pytest.approx(120_000.0)
+
+
+def test_short_term_disposals_ignores_matured(conn, settings) -> None:
+    # A matured lot (>24m) sold long-term is ganancia ocasional, NOT a short-term flag.
+    year = datetime.now(timezone.utc).year
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2023-01-01T00:00:00+00:00", 4000.0),
+        _trm(f"{year}-07-30T00:00:00+00:00", 4000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("old", "buy", "2023-01-01T00:00:00+00:00", 0.01, 30000.0, 300.0),
+        _trade("s1", "sell", f"{year}-07-30T00:00:00+00:00", 0.01, 63000.0, 630.0),
+    ]))
+    out = short_term_disposals(conn, settings)
+    assert out["count"] == 0
+    assert out["last"] is None

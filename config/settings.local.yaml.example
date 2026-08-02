@@ -46,3 +46,22 @@
 # sources:
 #   binance_account:
 #     net_deployed_usd: 1500
+
+# --- Régimen fiscal (opcional; jurisdicción personal) ------------------------
+# Config de tracking fiscal (aquí, no en el settings.yaml público, porque revela
+# jurisdicción). El código (ingest/trm.py, esquema tax_*, loaders) es genérico y público.
+# NO es asesoría tributaria: el panel ESTIMA, el contador liquida. Ejemplo (Colombia/DIAN):
+#
+# fiscal:
+#   enabled: true
+#   jurisdiction: "CO"
+#   currency: "COP"
+#   long_term_months: 24            # >=24 meses => ganancia ocasional; <24 => renta ordinaria
+#   occasional_gain_rate_pct: 15.0  # CONFIRMAR con contador
+#   costing_method: "PEPS"
+#   uvt_cop: {2024: null, 2025: null, 2026: null}   # null => "no calculable"
+#   trm:
+#     base_url: "https://www.datos.gov.co/resource/32sa-8pi3.json"
+#     history_since: "2024-01-01"
+#     series_id: "TRM:COP_USD"
+#     source: "banrep"

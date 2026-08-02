@@ -42,6 +42,7 @@ from ingest.fred import FredIngester
 from ingest.fred_releases import FredReleasesIngester
 from ingest.sentiment import FearGreedIngester
 from ingest.spot_prices import SpotPricesIngester
+from ingest.trm import TrmIngester
 
 log = get_logger(__name__)
 
@@ -71,6 +72,8 @@ def build_ingesters(
         SpotPricesIngester(settings),     # A8 Coinbase premium inputs
         BlockchainComIngester(settings),  # A10 BTC on-chain
     ]
+    if settings.raw.get("fiscal", {}).get("enabled"):
+        ingesters.append(TrmIngester(settings))  # TRM COP/USD (public; feeds the tax layer)
     try:
         ingesters.append(FredIngester(settings))
     except RuntimeError as exc:

@@ -17,6 +17,9 @@ from db.loader import (
     TRADE_COLUMNS,
     init_db,
     upsert_observations,
+    upsert_tax_disposals,
+    upsert_tax_lot_consumption,
+    upsert_tax_lots,
     upsert_trades,
 )
 
@@ -161,3 +164,46 @@ def test_upsert_trades_missing_columns_raises(conn: sqlite3.Connection) -> None:
 
 def test_trade_columns_contract() -> None:
     assert TRADE_COLUMNS[0] == "trade_id" and "fee_currency" in TRADE_COLUMNS
+
+
+# --- Colombian tax layer (FISCAL.md) ----------------------------------------
+
+
+def _lot(lot_id: str = "l1") -> dict:
+    return {
+        "lot_id": lot_id, "asset": "BTC", "acquired_at": "2025-10-01T00:00:00+00:00",
+        "units": 0.01, "units_remaining": 0.01, "cost_usd": 600.0, "trm_acquisition": 4000.0,
+        "cost_cop": 2_400_000.0, "fees_cop": 1000.0, "matures_at": "2027-10-01T00:00:00+00:00",
+        "origin": "compra", "source_ref": "tr1",
+    }
+
+
+def test_upsert_tax_lots_idempotent(conn: sqlite3.Connection) -> None:
+    assert upsert_tax_lots(conn, [_lot()]) == 1
+    upsert_tax_lots(conn, [_lot()])  # re-run must not duplicate
+    assert conn.execute("SELECT COUNT(*) FROM tax_lots").fetchone()[0] == 1
+    row = conn.execute("SELECT cost_cop, matures_at FROM tax_lots WHERE lot_id='l1'").fetchone()
+    assert row[0] == pytest.approx(2_400_000.0)
+
+
+def test_upsert_tax_disposals_and_consumption(conn: sqlite3.Connection) -> None:
+    upsert_tax_lots(conn, [_lot()])
+    upsert_tax_disposals(conn, [{
+        "disposal_id": "d1", "asset": "BTC", "disposed_at": "2026-05-01T00:00:00+00:00",
+        "units": 0.01, "proceeds_usd": 700.0, "trm_disposal": 4200.0,
+        "proceeds_cop": 2_940_000.0, "kind": "venta",
+    }])
+    upsert_tax_lot_consumption(conn, [{
+        "disposal_id": "d1", "lot_id": "l1", "units": 0.01, "cost_cop": 2_400_000.0,
+        "gain_cop": 540_000.0, "regime": "renta_ordinaria",
+    }])
+    assert conn.execute("SELECT COUNT(*) FROM tax_disposals").fetchone()[0] == 1
+    g = conn.execute("SELECT gain_cop, regime FROM tax_lot_consumption").fetchone()
+    assert g[0] == pytest.approx(540_000.0)
+    assert g[1] == "renta_ordinaria"
+
+
+def test_fiscal_upserts_empty_noop(conn: sqlite3.Connection) -> None:
+    assert upsert_tax_lots(conn, []) == 0
+    assert upsert_tax_disposals(conn, []) == 0
+    assert upsert_tax_lot_consumption(conn, []) == 0

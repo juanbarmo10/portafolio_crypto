@@ -189,6 +189,31 @@ def _macro_release_soon(conn: sqlite3.Connection, settings: Settings, params: di
     return out
 
 
+def _lot_maturity_soon(conn: sqlite3.Connection, settings: Settings, params: dict) -> list[Alert]:
+    """FISCAL.md §9 — a tax lot is within N days of the 24-month mark. Selling after it turns
+    the gain from renta ordinaria (up to 39%) into ganancia ocasional (15%). Local/fiscal only."""
+    if not settings.raw.get("fiscal", {}).get("enabled"):
+        return []
+    within = int(params.get("within_days", 60))
+    from transform.fiscal import maturity_summary
+
+    out: list[Alert] = []
+    for r in maturity_summary(conn, settings).to_dict("records"):
+        d = r["days_to_next"]
+        if d is not None and 0 <= d <= within and r["next_maturity"]:
+            day = str(r["next_maturity"])[:10]
+            out.append(
+                Alert(
+                    "lot_maturity_soon",
+                    f"lot_maturity_soon:{r['asset']}:{day}",
+                    f"⏳ *Maduración fiscal* — un lote de {r['asset']} cumple *24 meses en {d} días* "
+                    f"({day}). Vender **después** = ganancia ocasional (15%) en vez de renta ordinaria "
+                    f"(hasta 39%). No es señal de venta; es tu calendario fiscal (FISCAL.md §9).",
+                )
+            )
+    return out
+
+
 _EVALUATORS: dict[str, Callable[[sqlite3.Connection, Settings, dict], list[Alert]]] = {
     "etf_outflow_streak": _etf_outflow_streak,
     "funding_crowded": _funding_crowded,
@@ -196,6 +221,7 @@ _EVALUATORS: dict[str, Callable[[sqlite3.Connection, Settings, dict], list[Alert
     "unlock_soon": _unlock_soon,
     "monthly_dca_reminder": _monthly_dca_reminder,
     "macro_release_soon": _macro_release_soon,
+    "lot_maturity_soon": _lot_maturity_soon,
 }
 
 

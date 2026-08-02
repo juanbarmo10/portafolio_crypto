@@ -132,3 +132,30 @@ CREATE TABLE IF NOT EXISTS tax_lot_consumption (
     regime          TEXT,               -- 'ganancia_ocasional' | 'renta_ordinaria'
     PRIMARY KEY (disposal_id, lot_id)
 );
+
+-- Thesis journal (FISCAL.md §5): what you WROTE and when — NOT the computed semaphore.
+-- falsification_criteria is NOT NULL by design: no thesis is saved without a way to be wrong.
+CREATE TABLE IF NOT EXISTS thesis_log (
+    thesis_id              TEXT PRIMARY KEY,
+    asset                  TEXT NOT NULL,
+    written_at             TEXT NOT NULL,
+    thesis                 TEXT NOT NULL,
+    horizon                TEXT,
+    falsification_criteria TEXT NOT NULL,   -- *** required at schema level ***
+    probability            REAL,
+    review_date            TEXT,
+    status                 TEXT NOT NULL,   -- 'vigente'|'en_revision'|'roto'|'cumplida'
+    outcome_reasoning      TEXT,            -- on close: did the reasoning hold?
+    outcome_pnl            REAL             -- on close: did you make money? (SEPARATE)
+);
+
+-- Exit ladder (FISCAL.md §5): sell tranches written TODAY, in cold blood.
+CREATE TABLE IF NOT EXISTS exit_ladder (
+    ladder_id     TEXT PRIMARY KEY,
+    asset         TEXT NOT NULL,
+    tranche_n     INTEGER NOT NULL,
+    trigger_type  TEXT NOT NULL,      -- 'precio' | 'fecha' | 'multiplo'
+    trigger_value REAL NOT NULL,
+    pct_to_sell   REAL NOT NULL,
+    executed_at   TEXT                -- NULL until executed
+);

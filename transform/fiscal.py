@@ -409,3 +409,144 @@ def disposal_summary(conn: sqlite3.Connection, settings: Settings) -> dict[str, 
         "permuta_events": permutas,
         "realized_gain_cop": realized,
     }
+
+
+# --- Fase D: thesis journal + exit ladder (FISCAL.md §5) --------------------------------------
+
+
+def persist_thesis_and_ladder(conn: sqlite3.Connection, settings: Settings) -> dict[str, int]:
+    """Persist thesis-journal and exit-ladder entries from config (``fiscal.thesis_log`` /
+    ``fiscal.exit_ladder`` in settings.local.yaml). Idempotent; the loader rejects a thesis with
+    no falsification criteria (FISCAL.md §5). Returns row counts."""
+    from db.loader import upsert_exit_ladder, upsert_thesis_log
+
+    fiscal = settings.raw.get("fiscal", {})
+    today = datetime.now(timezone.utc).date().isoformat()
+    theses = [{
+        "thesis_id": t.get("thesis_id") or f"thesis:{i}",
+        "asset": t.get("asset"),
+        "written_at": t.get("written_at") or today,
+        "thesis": t.get("thesis"),
+        "horizon": t.get("horizon"),
+        "falsification_criteria": t.get("falsification_criteria"),
+        "probability": t.get("probability"),
+        "review_date": t.get("review_date"),
+        "status": t.get("status") or "vigente",
+        "outcome_reasoning": t.get("outcome_reasoning"),
+        "outcome_pnl": t.get("outcome_pnl"),
+    } for i, t in enumerate(fiscal.get("thesis_log", []) or [])]
+    ladders = [{
+        "ladder_id": lad.get("ladder_id") or f"ladder:{i}",
+        "asset": lad.get("asset"),
+        "tranche_n": lad.get("tranche_n", i + 1),
+        "trigger_type": lad.get("trigger_type"),
+        "trigger_value": lad.get("trigger_value"),
+        "pct_to_sell": lad.get("pct_to_sell"),
+        "executed_at": lad.get("executed_at"),
+    } for i, lad in enumerate(fiscal.get("exit_ladder", []) or [])]
+    return {
+        "thesis": upsert_thesis_log(conn, theses),
+        "ladder": upsert_exit_ladder(conn, ladders),
+    }
+
+
+def thesis_log_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Written thesis journal with a review-overdue flag (FISCAL.md §5).
+
+    ``review_overdue`` = the review date has passed while the thesis is still open
+    (``vigente``/``en_revision``) — the prompt to revisit it. Columns: [asset, thesis, horizon,
+    falsification_criteria, status, review_date, days_to_review, review_overdue].
+    """
+    rows = conn.execute(
+        "SELECT asset, thesis, horizon, falsification_criteria, status, review_date "
+        "FROM thesis_log ORDER BY asset"
+    ).fetchall()
+    today = datetime.now(timezone.utc).date()
+    out = []
+    for asset, thesis, horizon, falsif, status, review in rows:
+        days = None
+        overdue = False
+        if review:
+            rd = pd.Timestamp(review).date()
+            days = (rd - today).days
+            overdue = days < 0 and status in ("vigente", "en_revision")
+        out.append({
+            "asset": asset, "thesis": thesis, "horizon": horizon,
+            "falsification_criteria": falsif, "status": status, "review_date": review,
+            "days_to_review": days, "review_overdue": overdue,
+        })
+    return pd.DataFrame(out, columns=["asset", "thesis", "horizon", "falsification_criteria",
+                                      "status", "review_date", "days_to_review", "review_overdue"])
+
+
+def exit_ladder_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Exit-ladder tranches with progress toward each trigger (FISCAL.md §5).
+
+    Progress is computed for ``precio`` (current price vs. target) and ``multiplo`` (current
+    price / average entry cost vs. target multiple); ``fecha`` triggers are shown as-is.
+    ``reached`` marks a fired, unexecuted tranche. Columns: [asset, tranche_n, trigger_type,
+    trigger_value, pct_to_sell, detail, progress_pct, reached, executed].
+    """
+    rows = conn.execute(
+        "SELECT asset, tranche_n, trigger_type, trigger_value, pct_to_sell, executed_at "
+        "FROM exit_ladder ORDER BY asset, tranche_n"
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["asset", "tranche_n", "trigger_type", "trigger_value",
+                                     "pct_to_sell", "detail", "progress_pct", "reached", "executed"])
+    pnl = cop_usd_pnl_table(conn, settings)
+    cost_by = {r["asset"]: (r["cost_usd"], r["units"]) for r in pnl.to_dict("records")}
+    out = []
+    for asset, tranche_n, ttype, tval, pct, executed_at in rows:
+        price = _current_price_usd(conn, settings, asset)
+        progress = None
+        reached = False
+        detail = ""
+        if ttype == "precio" and price:
+            progress = price / tval * 100.0 if tval else None
+            reached = price >= tval
+            detail = f"${price:,.0f} / ${tval:,.0f}"
+        elif ttype == "multiplo" and price and asset in cost_by and cost_by[asset][1]:
+            avg = cost_by[asset][0] / cost_by[asset][1]
+            mult = price / avg if avg else None
+            if mult is not None:
+                progress = mult / tval * 100.0 if tval else None
+                reached = mult >= tval
+                detail = f"{mult:.2f}x / {tval:.2f}x"
+        elif ttype == "fecha":
+            detail = str(tval)
+        out.append({
+            "asset": asset, "tranche_n": tranche_n, "trigger_type": ttype, "trigger_value": tval,
+            "pct_to_sell": pct, "detail": detail, "progress_pct": progress,
+            "reached": reached and executed_at is None, "executed": executed_at is not None,
+        })
+    return pd.DataFrame(out)
+
+
+# --- Fase E: Formulario 160 (foreign assets) — FISCAL.md §8 -----------------------------------
+
+
+def form160_check(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    """Are you required to file Formulario 160 (foreign assets)? (FISCAL.md §8, Fase E).
+
+    Binance is a foreign asset; if its **patrimonial value at cost** (Art. 74/271) exceeds
+    ``foreign_assets_form160_uvt`` × UVT of the year, filing is mandatory (informational, but
+    omission is penalised). The UVT is set by the DIAN yearly and is ``null`` by default → the
+    check returns ``has_uvt=False`` and "no calculable" rather than a fabricated number. The
+    threshold is measured at Jan 1; here it uses current cost as a proxy (a caveat, not a filing).
+
+    Returns {has_uvt, obligado, patrimonio_cop, threshold_cop, uvt, uvt_threshold, year}.
+    """
+    fiscal = settings.raw.get("fiscal", {})
+    uvt_threshold = float(fiscal.get("foreign_assets_form160_uvt", 2000))
+    uvt_by_year = fiscal.get("uvt_cop", {}) or {}
+    year = datetime.now(timezone.utc).year
+    patrimonio_cop = float(cop_usd_pnl_table(conn, settings).attrs.get("patrimonio_cop", 0.0))
+    uvt = uvt_by_year.get(year, uvt_by_year.get(str(year)))
+    if not uvt:
+        return {"has_uvt": False, "obligado": None, "patrimonio_cop": patrimonio_cop,
+                "threshold_cop": None, "uvt": None, "uvt_threshold": uvt_threshold, "year": year}
+    threshold_cop = uvt_threshold * float(uvt)
+    return {"has_uvt": True, "obligado": patrimonio_cop > threshold_cop,
+            "patrimonio_cop": patrimonio_cop, "threshold_cop": threshold_cop,
+            "uvt": float(uvt), "uvt_threshold": uvt_threshold, "year": year}

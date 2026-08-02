@@ -18,12 +18,17 @@ import pytest
 
 from core.config import load_settings
 from db.loader import init_db, upsert_observations, upsert_trades
+from alerts.rules import _lot_maturity_soon
 from transform.fiscal import (
     build_tax_lots,
     cop_usd_pnl_table,
     disposal_summary,
+    exit_ladder_table,
+    form160_check,
     maturity_summary,
+    persist_thesis_and_ladder,
     simulate_peps_sale,
+    thesis_log_table,
 )
 
 
@@ -221,3 +226,78 @@ def test_disposal_summary_no_disposals(conn, settings) -> None:
     d = disposal_summary(conn, settings)
     assert d["count"] == 0
     assert d["habitual_risk"] is False
+
+
+# --- Fase D: thesis journal + exit ladder -----------------------------------
+
+
+def test_thesis_log_table_overdue_flag(conn, settings) -> None:
+    settings.raw["fiscal"]["thesis_log"] = [{
+        "thesis_id": "t_btc", "asset": "BTC", "written_at": "2026-01-01",
+        "thesis": "reserva de valor", "falsification_criteria": "flujos ETF negativos",
+        "status": "vigente", "review_date": "2026-01-15",  # past -> overdue
+    }]
+    persist_thesis_and_ladder(conn, settings)
+    row = thesis_log_table(conn, settings).iloc[0]
+    assert row["asset"] == "BTC"
+    assert bool(row["review_overdue"]) is True   # past review date, still 'vigente'
+
+
+def test_exit_ladder_price_progress(conn, settings) -> None:
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2026-08-02T00:00:00+00:00", 4000.0),
+        _price("bitcoin", "2026-08-02T00:00:00+00:00", 75000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2026-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+    ]))
+    settings.raw["fiscal"]["exit_ladder"] = [
+        {"ladder_id": "p1", "asset": "BTC", "tranche_n": 1, "trigger_type": "precio",
+         "trigger_value": 150000.0, "pct_to_sell": 30.0},
+    ]
+    persist_thesis_and_ladder(conn, settings)
+    row = exit_ladder_table(conn, settings).iloc[0]
+    assert row["progress_pct"] == pytest.approx(75000.0 / 150000.0 * 100.0)  # 50%
+    assert bool(row["reached"]) is False
+
+
+def test_form160_no_uvt_not_calculable(conn, settings) -> None:
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2025-01-01T00:00:00+00:00", 4000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+    ]))
+    f = form160_check(conn, settings)     # no uvt_cop in injected config
+    assert f["has_uvt"] is False
+    assert f["obligado"] is None
+    assert f["patrimonio_cop"] == pytest.approx(600.0 * 4000.0)
+
+
+def test_form160_obligado_with_uvt(conn, settings) -> None:
+    from datetime import datetime, timezone
+    year = datetime.now(timezone.utc).year
+    settings.raw["fiscal"]["uvt_cop"] = {year: 49_800.0}     # threshold = 2000 * 49_800
+    settings.raw["fiscal"]["foreign_assets_form160_uvt"] = 2000
+    upsert_observations(conn, pd.DataFrame([_trm("2025-01-01T00:00:00+00:00", 4000.0)]))
+    upsert_trades(conn, pd.DataFrame([
+        # cost_cop = 600 * 4000 = 2.4M < 2000*49800 = 99.6M -> NOT obligated
+        _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+    ]))
+    f = form160_check(conn, settings)
+    assert f["has_uvt"] is True
+    assert f["threshold_cop"] == pytest.approx(2000 * 49_800.0)
+    assert f["obligado"] is False
+
+
+def test_lot_maturity_soon_alert_fires(conn, settings) -> None:
+    settings.raw["fiscal"]["enabled"] = True
+    upsert_observations(conn, pd.DataFrame([_trm("2024-09-01T00:00:00+00:00", 4000.0)]))
+    upsert_trades(conn, pd.DataFrame([
+        # bought 2024-09-01 -> matures 2026-09-01 (~a month out from 'today' 2026-08-02)
+        _trade("b1", "buy", "2024-09-01T00:00:00+00:00", 0.01, 30000.0, 300.0),
+    ]))
+    alerts = _lot_maturity_soon(conn, settings, {"within_days": 60})
+    assert len(alerts) == 1
+    assert alerts[0].rule_id == "lot_maturity_soon"
+    assert "BTC" in alerts[0].message

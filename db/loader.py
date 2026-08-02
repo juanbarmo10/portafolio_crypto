@@ -326,3 +326,55 @@ def upsert_tax_disposals(conn: sqlite3.Connection, rows: list[dict]) -> int:
 def upsert_tax_lot_consumption(conn: sqlite3.Connection, rows: list[dict]) -> int:
     """Idempotently upsert PEPS lot-consumption rows (keyed by disposal_id+lot_id). FISCAL.md."""
     return _upsert_records(conn, _UPSERT_TAX_CONSUMPTION_SQL, TAX_CONSUMPTION_COLUMNS, rows, False, "tax consumption")
+
+
+THESIS_LOG_COLUMNS = [
+    "thesis_id", "asset", "written_at", "thesis", "horizon", "falsification_criteria",
+    "probability", "review_date", "status", "outcome_reasoning", "outcome_pnl",
+]
+
+_UPSERT_THESIS_SQL = """
+INSERT INTO thesis_log (thesis_id, asset, written_at, thesis, horizon, falsification_criteria,
+    probability, review_date, status, outcome_reasoning, outcome_pnl)
+VALUES (:thesis_id, :asset, :written_at, :thesis, :horizon, :falsification_criteria,
+    :probability, :review_date, :status, :outcome_reasoning, :outcome_pnl)
+ON CONFLICT(thesis_id) DO UPDATE SET
+    asset = excluded.asset, written_at = excluded.written_at, thesis = excluded.thesis,
+    horizon = excluded.horizon, falsification_criteria = excluded.falsification_criteria,
+    probability = excluded.probability, review_date = excluded.review_date,
+    status = excluded.status, outcome_reasoning = excluded.outcome_reasoning,
+    outcome_pnl = excluded.outcome_pnl
+"""
+
+EXIT_LADDER_COLUMNS = [
+    "ladder_id", "asset", "tranche_n", "trigger_type", "trigger_value", "pct_to_sell", "executed_at",
+]
+
+_UPSERT_EXIT_LADDER_SQL = """
+INSERT INTO exit_ladder (ladder_id, asset, tranche_n, trigger_type, trigger_value, pct_to_sell, executed_at)
+VALUES (:ladder_id, :asset, :tranche_n, :trigger_type, :trigger_value, :pct_to_sell, :executed_at)
+ON CONFLICT(ladder_id) DO UPDATE SET
+    asset = excluded.asset, tranche_n = excluded.tranche_n, trigger_type = excluded.trigger_type,
+    trigger_value = excluded.trigger_value, pct_to_sell = excluded.pct_to_sell,
+    executed_at = excluded.executed_at
+"""
+
+
+def upsert_thesis_log(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Upsert thesis-journal entries (keyed by thesis_id). FISCAL.md §5.
+
+    Enforces the discipline rule at the loader too: an entry **without** a non-empty
+    ``falsification_criteria`` is rejected loudly (no thesis is saved without a way to be wrong).
+    """
+    for r in rows:
+        if not str(r.get("falsification_criteria") or "").strip():
+            raise ValueError(
+                f"thesis_log '{r.get('thesis_id')}' has no falsification_criteria — "
+                "a thesis must state what would prove it wrong (FISCAL.md §5)."
+            )
+    return _upsert_records(conn, _UPSERT_THESIS_SQL, THESIS_LOG_COLUMNS, rows, False, "thesis-log entries")
+
+
+def upsert_exit_ladder(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Upsert exit-ladder tranches (keyed by ladder_id). FISCAL.md §5."""
+    return _upsert_records(conn, _UPSERT_EXIT_LADDER_SQL, EXIT_LADDER_COLUMNS, rows, False, "exit-ladder tranches")

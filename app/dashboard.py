@@ -76,8 +76,11 @@ from transform.fiscal import (  # noqa: E402
     build_tax_lots,
     cop_usd_pnl_table,
     disposal_summary,
+    exit_ladder_table,
+    form160_check,
     maturity_summary,
     simulate_peps_sale,
+    thesis_log_table,
 )
 from validation.backtest import funding_zscore_backtest, signal_battery  # noqa: E402
 from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
@@ -2120,6 +2123,70 @@ def _section_fiscal(conn, settings) -> None:
         st.dataframe(
             pd.DataFrame(cons_rows), hide_index=True, width="stretch",
             column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+        )
+
+    # Thesis journal (Fase D) — what you WROTE, with review-overdue flags.
+    thesis = thesis_log_table(conn, settings)
+    if not thesis.empty:
+        st.markdown("**Diario de tesis** (lo que escribiste; con criterio de falsación obligatorio)")
+        th_rows = [{
+            "Logo": settings.meta_for(r["asset"]).get("logo_url") or "",
+            "Activo": r["asset"],
+            "Tesis": r["thesis"],
+            "Se invalida si": r["falsification_criteria"],
+            "Estado": r["status"],
+            "Revisar": ("🔴 " if r["review_overdue"] else "") + (str(r["review_date"])[:10] if r["review_date"] else "—"),
+        } for r in thesis.to_dict("records")]
+        st.dataframe(
+            pd.DataFrame(th_rows), hide_index=True, width="stretch",
+            column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
+                "Revisar": st.column_config.TextColumn(
+                    help="🔴 = fecha de revisión vencida con la tesis aún abierta. El criterio de "
+                    "falsación es obligatorio: sin él no se registra la tesis (FISCAL.md §5)."
+                ),
+            },
+        )
+
+    # Exit ladder (Fase D) — sell tranches written in cold blood, with progress vs. trigger.
+    ladder = exit_ladder_table(conn, settings)
+    if not ladder.empty:
+        st.markdown("**Escalera de salida** (escrita hoy, en frío; progreso hacia cada trigger)")
+        lad_rows = [{
+            "Logo": settings.meta_for(r["asset"]).get("logo_url") or "",
+            "Activo": r["asset"],
+            "Tramo": int(r["tranche_n"]),
+            "Trigger": f"{r['trigger_type']} {r['detail']}".strip(),
+            "% a vender": f"{r['pct_to_sell']:.0f}%",
+            "Progreso": "—" if r["progress_pct"] is None else f"{min(r['progress_pct'], 999):.0f}%",
+            "Estado": "✅ ejecutado" if r["executed"] else ("🔔 alcanzado" if r["reached"] else "⏳ pendiente"),
+        } for r in ladder.to_dict("records")]
+        st.dataframe(
+            pd.DataFrame(lad_rows), hide_index=True, width="stretch",
+            column_config={"Logo": st.column_config.ImageColumn("", width="small")},
+        )
+
+    # Formulario 160 (Fase E) — foreign-assets filing threshold.
+    f160 = form160_check(conn, settings)
+    st.markdown("**Formulario 160** (activos en el exterior — Binance)")
+    if not f160["has_uvt"]:
+        st.info(
+            f"**No calculable** — falta la UVT de {f160['year']} en config (`fiscal.uvt_cop`). "
+            f"Patrimonio a costo: **{_fmt_cop(f160['patrimonio_cop'])}**. Umbral = "
+            f"{f160['uvt_threshold']:.0f} UVT (obligatorio declarar si se supera al 1 de enero). "
+            "Pon la UVT del año (resolución DIAN) para el chequeo."
+        )
+    elif f160["obligado"]:
+        st.warning(
+            f"⚠️ **Obligado al Formulario 160**: patrimonio a costo {_fmt_cop(f160['patrimonio_cop'])} "
+            f"> umbral {_fmt_cop(f160['threshold_cop'])} ({f160['uvt_threshold']:.0f} UVT). Declaración "
+            "informativa; su omisión tiene sanción. Confirma con el contador."
+        )
+    else:
+        st.success(
+            f"✅ **No obligado** (por ahora): patrimonio a costo {_fmt_cop(f160['patrimonio_cop'])} ≤ "
+            f"umbral {_fmt_cop(f160['threshold_cop'])}. Medido a **costo** y con el patrimonio de hoy "
+            "(el umbral se mide al 1 de enero) — aproximación, no declaración."
         )
 
     st.caption(

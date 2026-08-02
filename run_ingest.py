@@ -234,12 +234,13 @@ def main(argv: list[str] | None = None) -> int:
         # so a fiscal error never fails the ingest pipeline.
         if not args.public and settings.raw.get("fiscal", {}).get("enabled") and not args.only:
             try:
-                from transform.fiscal import persist_tax_lots
+                from transform.fiscal import persist_tax_lots, persist_thesis_and_ladder
                 c = persist_tax_lots(conn, settings)
-                log.info("Fiscal: %d lots, %d disposals, %d consumption rows.",
-                         c["lots"], c["disposals"], c["consumption"])
+                j = persist_thesis_and_ladder(conn, settings)
+                log.info("Fiscal: %d lots, %d disposals, %d consumption; %d thesis, %d ladder.",
+                         c["lots"], c["disposals"], c["consumption"], j["thesis"], j["ladder"])
             except Exception:  # noqa: BLE001 — fiscal build must never crash the pipeline
-                log.exception("Fiscal lot build failed (non-fatal).")
+                log.exception("Fiscal build failed (non-fatal).")
 
         # A parser/scraper breaking (e.g. Farside HTML changing, section 9) is a fail-loud
         # event you want on your phone, not just in a log (D1).

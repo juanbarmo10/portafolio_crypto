@@ -17,9 +17,11 @@ from db.loader import (
     TRADE_COLUMNS,
     init_db,
     upsert_observations,
+    upsert_exit_ladder,
     upsert_tax_disposals,
     upsert_tax_lot_consumption,
     upsert_tax_lots,
+    upsert_thesis_log,
     upsert_trades,
 )
 
@@ -207,3 +209,28 @@ def test_fiscal_upserts_empty_noop(conn: sqlite3.Connection) -> None:
     assert upsert_tax_lots(conn, []) == 0
     assert upsert_tax_disposals(conn, []) == 0
     assert upsert_tax_lot_consumption(conn, []) == 0
+
+
+def _thesis(thesis_id: str = "t1", falsification: str = "flujos ETF negativos") -> dict:
+    return {
+        "thesis_id": thesis_id, "asset": "BTC", "written_at": "2026-01-01T00:00:00+00:00",
+        "thesis": "reserva de valor", "horizon": "trimestres",
+        "falsification_criteria": falsification, "probability": 0.6,
+        "review_date": "2026-09-01", "status": "vigente",
+        "outcome_reasoning": None, "outcome_pnl": None,
+    }
+
+
+def test_upsert_thesis_log_requires_falsification(conn: sqlite3.Connection) -> None:
+    assert upsert_thesis_log(conn, [_thesis()]) == 1
+    # A thesis with no (or blank) falsification criteria is rejected loudly (FISCAL.md §5).
+    with pytest.raises(ValueError):
+        upsert_thesis_log(conn, [_thesis("t2", falsification="   ")])
+
+
+def test_upsert_exit_ladder_idempotent(conn: sqlite3.Connection) -> None:
+    row = {"ladder_id": "l1", "asset": "BTC", "tranche_n": 1, "trigger_type": "multiplo",
+           "trigger_value": 3.0, "pct_to_sell": 30.0, "executed_at": None}
+    assert upsert_exit_ladder(conn, [row]) == 1
+    upsert_exit_ladder(conn, [row])
+    assert conn.execute("SELECT COUNT(*) FROM exit_ladder").fetchone()[0] == 1

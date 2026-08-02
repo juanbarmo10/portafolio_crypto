@@ -65,3 +65,11 @@
 #     history_since: "2024-01-01"
 #     series_id: "TRM:COP_USD"
 #     source: "banrep"
+#   # Fase D — diario de tesis (criterio de falsación OBLIGATORIO) y escalera de salida:
+#   thesis_log:
+#     - {thesis_id: t_btc, asset: BTC, written_at: "2026-01-01", thesis: "Reserva de valor",
+#        horizon: "trimestres", falsification_criteria: "flujos ETF negativos sostenidos",
+#        status: vigente, review_date: "2026-09-01"}
+#   exit_ladder:
+#     - {ladder_id: btc_1, asset: BTC, tranche_n: 1, trigger_type: multiplo, trigger_value: 3, pct_to_sell: 30}
+#     - {ladder_id: btc_2, asset: BTC, tranche_n: 2, trigger_type: precio,   trigger_value: 150000, pct_to_sell: 30}

@@ -412,6 +412,8 @@ alerts:
     - {id: unlock_soon,        kind: unlock_soon,        within_days: 7}
     - {id: monthly_dca_reminder, kind: monthly_dca_reminder, day_of_month: 1}
     - {id: macro_release_soon, kind: macro_release_soon, within_days: 3}
+    # Fiscal (local only; the evaluator no-ops unless fiscal.enabled). FISCAL.md §9.
+    - {id: lot_maturity_soon,  kind: lot_maturity_soon,  within_days: 60}
 
 # --- Thesis categories (CLAUDE.md section 5) ---------------------------------
 # Brief explanation per thesis category, shown in the Tesis table. Diversification

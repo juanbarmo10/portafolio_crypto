@@ -1,4 +1,4 @@
-"""Tests for transform.portfolio_risk (IDEAS_MEJORAS Parte B, B2/B3; CLAUDE.md section 10).
+"""Tests for transform.portfolio_risk (RESEARCH.md (Parte B), B2/B3; CLAUDE.md section 10).
 
 Seeds a controlled scenario where ETH returns are exactly 2× BTC returns, so correlation,
 beta, HHI and risk contribution have known closed-form values — no network.

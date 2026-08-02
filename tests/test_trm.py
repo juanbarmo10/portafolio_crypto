@@ -1,4 +1,4 @@
-"""Tests for the TRM (COP/USD) parser (FISCAL.md Paso 2, CLAUDE.md section 10).
+"""Tests for the TRM (COP/USD) parser (RESEARCH.md §17 Paso 2, CLAUDE.md section 10).
 
 Pure parser tests, no network. The TRM feeds the Colombian tax layer, where the cost
 basis is frozen at the acquisition-day rate (Art. 269 E.T.), so parsing it correctly

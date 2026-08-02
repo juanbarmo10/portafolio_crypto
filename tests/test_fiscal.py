@@ -1,4 +1,4 @@
-"""Tests for the Colombian tax layer (FISCAL.md §10). The sensitive ones:
+"""Tests for the Colombian tax layer (RESEARCH.md §17). The sensitive ones:
 
 - COP cost is frozen at the acquisition-day TRM (Art. 269).
 - PEPS consumes the oldest lot first; regime splits by 24-month maturity.
@@ -305,7 +305,7 @@ def test_lot_maturity_soon_alert_fires(conn, settings) -> None:
 
 def test_build_tax_lots_records_unmatched_sell(conn, settings) -> None:
     # Sell more than is lotted (rest acquired via Earn/Convert, not in `trades`): the excess is
-    # recorded as `unmatched`, never dropped silently (FISCAL.md §0/§2.3).
+    # recorded as `unmatched`, never dropped silently (RESEARCH.md §17/§2.3).
     upsert_observations(conn, pd.DataFrame([
         _trm("2025-01-01T00:00:00+00:00", 4000.0),
         _trm("2025-06-01T00:00:00+00:00", 4200.0),

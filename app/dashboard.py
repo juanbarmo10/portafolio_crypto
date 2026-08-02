@@ -1544,7 +1544,7 @@ def _dca_shopping_list_view(conn, settings, holdings) -> None:
     )
     if settings.raw.get("fiscal", {}).get("enabled"):
         st.caption(
-            "🇨🇴 **Cláusula fiscal (FISCAL.md §7):** rebalancear con el **aporte** (dinero nuevo) "
+            "🇨🇴 **Cláusula fiscal (RESEARCH.md §17):** rebalancear con el **aporte** (dinero nuevo) "
             "evita permutas — un swap cripto→cripto es enajenación gravable (Art. 90) y **reinicia el "
             "reloj de 24 meses**; el aporte logra lo mismo con **cero costo fiscal**. Los activos con "
             "tesis invalidada (veto 🚫) quedan **excluidos** del reparto."
@@ -1897,11 +1897,11 @@ def _battery_result(db_path_str: str, horizon: int) -> dict:
 
 
 def _section_fiscal(conn, settings) -> None:
-    """Section 6 — Colombian tax layer (FISCAL.md). LOCAL only, hidden under PUBLIC_MODE.
+    """Section 6 — Colombian tax layer (RESEARCH.md §17). LOCAL only, hidden under PUBLIC_MODE.
 
     Shows lots with their frozen COP cost, the COP-vs-USD PnL (a USD loss can be a COP gain),
     and the fiscal net worth at COST (Art. 74/271). Every figure is an ESTIMATE — the panel
-    estimates, the accountant files (FISCAL.md §0). Tax rates/regimes stay gated behind the
+    estimates, the accountant files (RESEARCH.md §17). Tax rates/regimes stay gated behind the
     accountant questions (§12); this view is the factual cost/PnL layer.
     """
     disclaimer = settings.raw.get("fiscal", {}).get(
@@ -1932,20 +1932,20 @@ def _section_fiscal(conn, settings) -> None:
         delta="⚠ riesgo habitual" if dsum["habitual_risk"] else None, delta_color="inverse",
         help="Ventas + permutas del año (las compras no cuentan) vs. el umbral configurado. Un patrón "
         "alto puede gatillar reclasificación a **actividad habitual** — ahí la regla de 24 meses no "
-        "aplica en absoluto y todo sería renta ordinaria (FISCAL.md §7.3).",
+        "aplica en absoluto y todo sería renta ordinaria (RESEARCH.md §17).",
     )
     if dsum["habitual_risk"]:
         st.error(
             f"⚠️ **{dsum['count']} enajenaciones en {year}** (umbral {dsum['threshold']}): vigila la "
             "**reclasificación a actividad habitual** — las compras no cuentan, pero ventas y permutas sí. "
             "Si la DIAN te considera habitual, las cripto pasan a inventario y **pierdes el régimen de "
-            "ganancia ocasional** (FISCAL.md §7.3). Confírmalo con el contador."
+            "ganancia ocasional** (RESEARCH.md §17). Confírmalo con el contador."
         )
     if dsum["permuta_events"]:
         st.warning(
             f"⚠️ **{len(dsum['permuta_events'])} permuta(s) cripto→cripto** en {year}: cada una es un "
             "**evento gravable** (Art. 90) que **reinicia el reloj de 24 meses** del activo recibido "
-            "(FISCAL.md §7.2)."
+            "(RESEARCH.md §17)."
         )
     if dsum.get("unmatched_events"):
         detail = ", ".join(f"{u['units']:.4f} {u['asset']} ({u['date']})" for u in dsum["unmatched_events"])
@@ -1953,7 +1953,7 @@ def _section_fiscal(conn, settings) -> None:
             f"⚠️ **Ventas sin lote de costo:** {detail}. Vendiste más unidades de las que hay en "
             "`trades` (probablemente adquiridas por Earn/Convert). Esos ingresos **no tienen costo base** "
             "→ su ganancia **no se calcula** aquí; regístralos con el contador (valor de mercado a la "
-            "fecha de adquisición). No se descartan en silencio (FISCAL.md §2.3)."
+            "fecha de adquisición). No se descartan en silencio (RESEARCH.md §17)."
         )
 
     # COP vs USD PnL — the headline comparison.
@@ -2152,7 +2152,7 @@ def _section_fiscal(conn, settings) -> None:
                 "Logo": st.column_config.ImageColumn("", width="small"),
                 "Revisar": st.column_config.TextColumn(
                     help="🔴 = fecha de revisión vencida con la tesis aún abierta. El criterio de "
-                    "falsación es obligatorio: sin él no se registra la tesis (FISCAL.md §5)."
+                    "falsación es obligatorio: sin él no se registra la tesis (RESEARCH.md §17)."
                 ),
             },
         )
@@ -2200,9 +2200,9 @@ def _section_fiscal(conn, settings) -> None:
 
     st.caption(
         "Método **PEPS/FIFO** (consume el lote más antiguo). Los cálculos de **tarifa** (15% vs. "
-        "progresiva), UVT y exenciones están **pendientes de confirmar con el contador** (FISCAL.md "
+        "progresiva), UVT y exenciones están **pendientes de confirmar con el contador** (RESEARCH.md §17 "
         "§12) y no se muestran como impuesto. Permutas cripto→cripto vía Convert no llegan a `trades` "
-        "hoy (punto ciego, FISCAL.md §2.2)."
+        "hoy (punto ciego, RESEARCH.md §17)."
     )
 
 

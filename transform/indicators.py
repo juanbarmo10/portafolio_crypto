@@ -119,7 +119,7 @@ def mc_tvl_ratio(market_cap: float | None, tvl: float | None) -> float | None:
 def relative_premium_pct(numerator: float | None, base: float | None) -> float | None:
     """``(numerator / base - 1) * 100`` in percent, or None if inputs are missing/zero.
 
-    The shared primitive for two Q2 signals (IDEAS_MEJORAS A4, A8):
+    The shared primitive for two Q2 signals (RESEARCH.md A4, A8):
       * perp-vs-spot **basis** — ``relative_premium_pct(perp_close, spot_price)`` — a
         thermometer of leverage/optimism (perp trades above spot = leveraged longs paying
         up; below = pessimism/backwardation).
@@ -215,7 +215,7 @@ def fed_net_liquidity_series(
     """Fed **net liquidity** = WALCL − TGA − RRP, in USD billions (level 1, A1).
 
     The most-followed proxy for how much money is actually available in the system;
-    crypto, a long-duration risk asset, tracks it closely (IDEAS_MEJORAS Parte A). The
+    crypto, a long-duration risk asset, tracks it closely (RESEARCH.md (Parte A)). The
     three FRED components have mixed units and cadences — WALCL/TGA are weekly and in
     *millions*, RRP is daily and in *billions* — so each is scaled to billions via its
     configured ``unit_scale`` and aligned **as-of** (union of dates, forward-filled)
@@ -1334,7 +1334,7 @@ def liquidations_summary(conn: sqlite3.Connection, settings: Settings) -> dict[s
 
 
 # ---------------------------------------------------------------------------
-# IDEAS_MEJORAS Parte A — rotation, sentiment, liquidity-proxy & on-chain views
+# RESEARCH.md (Parte A) — rotation, sentiment, liquidity-proxy & on-chain views
 # All read stored observations only (no network). Return dicts the dashboard renders.
 # ---------------------------------------------------------------------------
 
@@ -1495,7 +1495,7 @@ def btc_onchain_summary(conn: sqlite3.Connection, settings: Settings) -> dict[st
 
 
 # ---------------------------------------------------------------------------
-# IDEAS_MEJORAS Parte B — B1: regime scoreboard (the "marcador rector")
+# RESEARCH.md (Parte B) — B1: regime scoreboard (the "marcador rector")
 # ---------------------------------------------------------------------------
 
 

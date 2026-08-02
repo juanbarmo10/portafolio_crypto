@@ -1,4 +1,4 @@
-"""Colombian tax layer: lots, PEPS disposals and COP/USD PnL (FISCAL.md Paso 6).
+"""Colombian tax layer: lots, PEPS disposals and COP/USD PnL (RESEARCH.md §17 Paso 6).
 
 Builds **immutable acquisition lots** from the real ``trades``, freezing each cost in COP at
 the acquisition-day TRM (Art. 269 E.T.), and matches sells against the oldest lots (PEPS/FIFO)
@@ -7,12 +7,12 @@ into disposals with a **regime split**: a lot held ≥ ``long_term_months`` (24)
 :func:`cop_usd_pnl_table` — the same position shown in **both** currencies, because a loss in
 USD can be a **taxable gain in COP** when the peso devalues between buy and sell.
 
-**Estimates, not filings** (FISCAL.md §0): every figure is ``ESTIMADO — verificar con contador``.
+**Estimates, not filings** (RESEARCH.md §17): every figure is ``ESTIMADO — verificar con contador``.
 Personal data: never synced to a shared/cloud DB, hidden under ``PUBLIC_MODE``.
 
 Pure/deterministic given the DB; no network. Prices use CoinGecko latest (the panel's source);
 the TRM is the ``banrep`` series. Crypto→crypto Converts are a known blind spot (they are dropped
-upstream in ``parse_convert`` — FISCAL.md §2.2); only what reaches ``trades`` is lotted here.
+upstream in ``parse_convert`` — RESEARCH.md §17); only what reaches ``trades`` is lotted here.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def build_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, li
                     queue.popleft()
             # Units sold beyond any cost lot (e.g. coins from Earn/Convert not in `trades`): their
             # proceeds have NO frozen cost, so their gain is NOT computed. Recorded, never dropped
-            # silently (FISCAL.md §0 — errors here are high and silent). Surfaced in disposal_summary.
+            # silently (RESEARCH.md §17 — errors here are high and silent). Surfaced in disposal_summary.
             disp["unmatched"] = remaining if remaining > 1e-12 else 0.0
 
     return {"lots": lots, "disposals": disposals, "consumption": consumption}
@@ -165,7 +165,7 @@ def _current_price_usd(conn: sqlite3.Connection, settings: Settings, asset: str)
 def cop_usd_pnl_table(
     conn: sqlite3.Connection, settings: Settings, built: dict | None = None
 ) -> pd.DataFrame:
-    """Unrealized PnL per asset in **USD and COP side by side** (FISCAL.md §6.2).
+    """Unrealized PnL per asset in **USD and COP side by side** (RESEARCH.md §17).
 
     Cost is the frozen COP cost of the lots still open (Art. 269); current value is the live
     CoinGecko price × the latest TRM. The point: ``pnl_usd`` and ``pnl_cop`` can disagree in
@@ -220,13 +220,13 @@ def cop_usd_pnl_table(
 # and consumed in memory by the views — they are NOT persisted (the tables had no reader).
 
 
-# --- Fase B: maturation metrics + pre-sale PEPS simulator (FISCAL.md §6.2/§6.3) --------------
+# --- Fase B: maturation metrics + pre-sale PEPS simulator (RESEARCH.md §17/§6.3) --------------
 
 
 def maturity_summary(
     conn: sqlite3.Connection, settings: Settings, built: dict | None = None
 ) -> pd.DataFrame:
-    """Per-asset maturation, measured in **units** (not value) — FISCAL.md §6.3.
+    """Per-asset maturation, measured in **units** (not value) — RESEARCH.md §17.
 
     A lot matures ``long_term_months`` (24) after acquisition; once matured, selling it is
     *ganancia ocasional* (15%) instead of *renta ordinaria* (progressive, up to 39%). Reports
@@ -277,13 +277,13 @@ def simulate_peps_sale(
     conn: sqlite3.Connection, settings: Settings, asset: str, units: float,
     price_usd: float | None = None, built: dict | None = None,
 ) -> dict[str, Any]:
-    """The most valuable function (FISCAL.md §6.2): "if I sell N units of X", **before** selling.
+    """The most valuable function (RESEARCH.md §17): "if I sell N units of X", **before** selling.
 
     Consumes the oldest open lots (PEPS) at today's price and TRM, and splits the result into
     **ganancia ocasional** (lots matured ≥24 months → 15%) vs **renta ordinaria** (< 24 months →
     your estimated marginal), in COP and USD side by side. Tax is estimated only on positive
     gains per regime; the ordinary tax is ``None`` until you set a real marginal rate (it stays
-    an ESTIMATE either way — FISCAL.md §0/§12). ``shortfall`` = units beyond your lotted holdings
+    an ESTIMATE either way — RESEARCH.md §17/§12). ``shortfall`` = units beyond your lotted holdings
     (acquired via Earn/Convert, no cost basis in ``trades``). ``has_data`` False if no price/TRM.
 
     Returns a dict with proceeds/cost/gain (COP+USD), the per-regime split, tax estimates and
@@ -375,7 +375,7 @@ def simulate_peps_sale(
 def disposal_summary(
     conn: sqlite3.Connection, settings: Settings, built: dict | None = None
 ) -> dict[str, Any]:
-    """Count this year's disposals and flag habitual-activity risk (FISCAL.md §7.3).
+    """Count this year's disposals and flag habitual-activity risk (RESEARCH.md §17).
 
     Sells **and** swaps (permutas) count; buys do not. If the DIAN sees a habitual trading
     pattern, the crypto becomes **inventory (movable asset)** and the 24-month rule stops
@@ -384,7 +384,7 @@ def disposal_summary(
     event that resets the maturity clock, §7.2) and the realized COP gain of the year.
 
     ``unmatched_events`` lists disposals that sold more units than were lotted (proceeds with no
-    cost basis — gain not computed; FISCAL.md §0/§2.3).
+    cost basis — gain not computed; RESEARCH.md §17/§2.3).
 
     Returns {year, count, ventas, permutas, threshold, habitual_risk, permuta_events,
     realized_gain_cop, unmatched_events}.
@@ -422,13 +422,13 @@ def disposal_summary(
     }
 
 
-# --- Fase D: thesis journal + exit ladder (FISCAL.md §5) --------------------------------------
+# --- Fase D: thesis journal + exit ladder (RESEARCH.md §17) --------------------------------------
 
 
 def persist_thesis_and_ladder(conn: sqlite3.Connection, settings: Settings) -> dict[str, int]:
     """Persist thesis-journal and exit-ladder entries from config (``fiscal.thesis_log`` /
     ``fiscal.exit_ladder`` in settings.local.yaml). Idempotent; the loader rejects a thesis with
-    no falsification criteria (FISCAL.md §5). Returns row counts."""
+    no falsification criteria (RESEARCH.md §17). Returns row counts."""
     from db.loader import upsert_exit_ladder, upsert_thesis_log
 
     fiscal = settings.raw.get("fiscal", {})
@@ -462,7 +462,7 @@ def persist_thesis_and_ladder(conn: sqlite3.Connection, settings: Settings) -> d
 
 
 def thesis_log_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
-    """Written thesis journal with a review-overdue flag (FISCAL.md §5).
+    """Written thesis journal with a review-overdue flag (RESEARCH.md §17).
 
     ``review_overdue`` = the review date has passed while the thesis is still open
     (``vigente``/``en_revision``) — the prompt to revisit it. Columns: [asset, thesis, horizon,
@@ -493,7 +493,7 @@ def thesis_log_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFra
 def exit_ladder_table(
     conn: sqlite3.Connection, settings: Settings, built: dict | None = None
 ) -> pd.DataFrame:
-    """Exit-ladder tranches with progress toward each trigger (FISCAL.md §5).
+    """Exit-ladder tranches with progress toward each trigger (RESEARCH.md §17).
 
     Progress is computed for ``precio`` (current price vs. target) and ``multiplo`` (current
     price / average entry cost vs. target multiple); ``fecha`` triggers are shown as-is.
@@ -536,13 +536,13 @@ def exit_ladder_table(
     return pd.DataFrame(out)
 
 
-# --- Fase E: Formulario 160 (foreign assets) — FISCAL.md §8 -----------------------------------
+# --- Fase E: Formulario 160 (foreign assets) — RESEARCH.md §17 -----------------------------------
 
 
 def form160_check(
     conn: sqlite3.Connection, settings: Settings, built: dict | None = None
 ) -> dict[str, Any]:
-    """Are you required to file Formulario 160 (foreign assets)? (FISCAL.md §8, Fase E).
+    """Are you required to file Formulario 160 (foreign assets)? (RESEARCH.md §17, Fase E).
 
     Binance is a foreign asset; if its **patrimonial value at cost** (Art. 74/271) exceeds
     ``foreign_assets_form160_uvt`` × UVT of the year, filing is mandatory (informational, but

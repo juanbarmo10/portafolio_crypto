@@ -190,7 +190,7 @@ def _macro_release_soon(conn: sqlite3.Connection, settings: Settings, params: di
 
 
 def _lot_maturity_soon(conn: sqlite3.Connection, settings: Settings, params: dict) -> list[Alert]:
-    """FISCAL.md §9 — a tax lot is within N days of the 24-month mark. Selling after it turns
+    """RESEARCH.md §17 — a tax lot is within N days of the 24-month mark. Selling after it turns
     the gain from renta ordinaria (up to 39%) into ganancia ocasional (15%). Local/fiscal only."""
     if not settings.raw.get("fiscal", {}).get("enabled"):
         return []
@@ -208,7 +208,7 @@ def _lot_maturity_soon(conn: sqlite3.Connection, settings: Settings, params: dic
                     f"lot_maturity_soon:{r['asset']}:{day}",
                     f"⏳ *Maduración fiscal* — un lote de {r['asset']} cumple *24 meses en {d} días* "
                     f"({day}). Vender **después** = ganancia ocasional (15%) en vez de renta ordinaria "
-                    f"(hasta 39%). No es señal de venta; es tu calendario fiscal (FISCAL.md §9).",
+                    f"(hasta 39%). No es señal de venta; es tu calendario fiscal (RESEARCH.md §17).",
                 )
             )
     return out

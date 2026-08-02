@@ -8,8 +8,9 @@ derivados y los presenta en Streamlit, con alertas por Telegram y un framework d
 validación estadística de señales.
 
 La **arquitectura y las decisiones de diseño** (capas, esquema, point-in-time, metodología de
-indicadores y validación) están en **[ARCHITECTURE.md](ARCHITECTURE.md)**. El contexto operativo
-detallado con datos personales se mantiene en documentación interna, fuera del repositorio público.
+indicadores y validación) están [más abajo](#arquitectura-y-decisiones-de-diseño). El contexto
+operativo detallado con datos personales se mantiene en documentación interna, fuera del repositorio
+público.
 
 ## Ejecutar el proyecto (resumen)
 
@@ -175,6 +176,80 @@ Incluye hasta ahora:
   rotación, DVOL, Fear & Greed, on-chain), la capa fiscal (lotes FIFO, congelado de costo, split de
   régimen, divergencia de divisa, Formulario 160), holdings y humo de render.
 
+## Arquitectura y decisiones de diseño
+
+Cómo está construido y **por qué**. Dos decisiones rectoras: **pull, no push** (el mayor riesgo del
+proyecto es conductual — un panel en tiempo real empuja a operar; sin tickers, auto-refresh ni alertas
+de precio; resolución diaria) y **solo fuentes gratuitas**.
+
+```mermaid
+flowchart LR
+    subgraph Fuentes["Fuentes gratuitas"]
+        FRED[FRED REST]
+        CG[CoinGecko]
+        DL[DefiLlama]
+        DER[Binance/Bybit ccxt]
+        ETF[Farside scraper]
+        MORE[Deribit · Alt.me · Blockchain.com · Coinbase/Binance spot · banrep TRM]
+    end
+    Fuentes --> ING[ingest/ · fetch parsers puros]
+    ING --> LOADER[db/loader · upsert idempotente]
+    LOADER --> DB[(SQLite / PostgreSQL<br/>formato largo)]
+    DB --> TR[transform/ · indicadores puros]
+    DB --> VAL[validation/ · backtest]
+    TR --> APP[app/dashboard.py · Streamlit pull]
+    VAL --> APP
+    TR --> ALERTS[alerts/ · reglas + Telegram]
+    DB --> ALERTS
+```
+
+**Capas** (cada una testeable de forma aislada):
+
+| Capa | Responsabilidad | Nota clave |
+|---|---|---|
+| `ingest/` | `fetch() -> DataFrame[source, series_id, ts, ts_release, value]` | Parsers **puros** + fixtures congelados; fallan ruidosamente si cambia el HTML/JSON. |
+| `db/` | Esquema (formato largo) + upsert idempotente + lectura | `INSERT ... ON CONFLICT DO UPDATE`; adapter portable SQLite↔Postgres (`DATABASE_URL`). |
+| `transform/` | Indicadores como **funciones puras** + constructores de tabla | Sin red; entrada faltante → `None`, no excepción. |
+| `validation/` | Backtest de señales (retornos forward + bootstrap) | Point-in-time, sin look-ahead. |
+| `alerts/` | Reglas declarativas + Telegram | Dedup por evento/día; solo condiciones accionables. |
+| `app/` | Dashboard Streamlit (5 secciones + showcase) | Pull, sin auto-refresh. |
+
+**Esquema — formato largo.** Una sola tabla `observations(source, series_id, ts, ts_release, value)`:
+añadir una serie nueva **no requiere migración**. `ts` = fecha de referencia; `ts_release` = fecha de
+publicación (crítico para el anti-look-ahead). Idempotencia obligatoria vía la PK `(source, series_id,
+ts)`. Tablas auxiliares: `events`, `trades`, `capital_flows`, `dca_plan`, `exit_rules`, `alerts_log`,
+`thesis_log`, `exit_ladder`.
+
+**Decisiones técnicas notables:**
+- **Point-in-time / anti look-ahead** — el CPI de junio se publica en julio; asignarlo a "junio" en un
+  backtest usa el futuro. Cada dato macro guarda `ts` **y** `ts_release`; todo z-score/backtest usa solo
+  la ventana anterior a cada fecha. FRED se consulta con `output_type=4` (initial release only),
+  bisecando la ventana real-time cuando supera el límite de 2000 vintage dates.
+- **Backend de DB portable** — un adaptador fino (`db/database.py`) expone la interfaz de `sqlite3` sobre
+  `psycopg` según `DATABASE_URL`; el código de negocio no sabe qué backend hay debajo.
+- **Scraping frágil por diseño** — parser puro testeado contra un **fixture HTML congelado**; si la
+  estructura cambia, el test falla en CI en vez de emitir datos silenciosamente incorrectos.
+- **Aislamiento de privacidad** — la ingesta a la DB pública usa `--public` (omite la cuenta personal);
+  el deploy usa `PUBLIC_MODE=1` (oculta la cartera). Las claves de cuenta nunca se despliegan.
+- **Anti-overfitting** — el semáforo de régimen y el asignador usan pocos componentes, pesos fijos y
+  umbrales en config; nada se optimiza sobre el histórico. La validación documenta también lo que **no**
+  funciona (batería C1: ninguna señal supera el umbral FDR — ese es el punto).
+
+**Metodología (equaciones clave, detalle en la sección de validación):** funding z-score point-in-time;
+estado del rally por cuadrantes precio×OI; value accrual `MC/TVL` y `MC/Revenue` (P/E cripto); DCA vs.
+baseline sobre la **media armónica** de precios; liquidez neta `WALCL−TGA−RRP` con `unit_scale` por
+serie; contribución al riesgo `RCᵢ = wᵢ·(Σw)ᵢ/(wᵀΣw)`; validación con baseline disjunto + p-valor por
+permutación + FDR Benjamini-Hochberg.
+
+**Trampas del dominio que el diseño evita:** look-ahead bias · overfitting (validación fuera de muestra,
+pocos parámetros) · discrepancia entre fuentes (no se mezclan proveedores en una serie) · rate limits
+(batch, backoff, backfill idempotente que reintenta y salta ante un 429).
+
+**Calidad y despliegue:** `pytest` obligatorio en parsers (fixtures) y transformaciones + humo de render
+(`AppTest`); **CI** (GitHub Actions) corre `ruff` + `pytest` en cada push; cron/systemd local escribe
+datos **públicos** en una Postgres gestionada y Streamlit Cloud la lee en modo público — la cartera
+personal nunca sale de la máquina local.
+
 ## Requisitos
 
 - Python 3.11+
@@ -190,19 +265,31 @@ pip install -e ".[dev]"          # runtime + tooling de tests
 #   pip install -e ".[markets]"  # ccxt / scraping (fase 2)
 ```
 
-## Configuración
+## Configuración — cómo modificar los parámetros
+
+**Nada se hardcodea en el código.** Toda la parametrización vive en cuatro archivos; edítalos y
+reinicia el proceso (el dashboard cachea la config: cambios de config → reiniciar; cambios de datos →
+solo refrescar la página).
 
 ```bash
-cp config/.env.example config/.env
-# Editar config/.env y añadir FRED_API_KEY (gratuita) cuando se llegue a la fase 1.
+cp config/.env.example config/.env                        # secretos
+cp config/settings.local.yaml.example config/settings.local.yaml   # datos personales (opcional)
 ```
 
-Los secretos van solo en `config/.env` (ignorado por git). El resto de la configuración
-—activos, umbrales, ventanas, IDs— vive en `config/settings.yaml`. Nada se hardcodea en código.
+| Archivo | Git | Qué controla |
+|---|---|---|
+| **`config/.env`** | ignorado | **Secretos.** `FRED_API_KEY` (macro, gratis), `TELEGRAM_TOKEN`/`TELEGRAM_CHAT_ID` (alertas), `BINANCE_API_KEY`/`BINANCE_API_SECRET` (cuenta **read-only**), `DATABASE_URL` (Postgres/Neon; si falta → SQLite local), `LOG_LEVEL`, `PUBLIC_MODE=1` (oculta la cartera). |
+| **`config/settings.yaml`** | commit | **Config pública.** Universo de activos + IDs (`coingecko_id`/`defillama`); umbrales e indicadores (`indicators.*`: dead-zones del régimen, banda de drift, `unlock_pct_alert`, riesgo); ventanas de historial por fuente; series FRED (`sources.fred.*`, con `label`/`crypto_effect`); pesos objetivo (`portfolio.target_weights` por tramo, `target_weights_asset` por activo, `tilt_cap_pct`); reglas de alerta (`alerts.rules`); calendario (`macro_calendar.fomc_dates`); categorías de tesis. |
+| **`config/assets_meta.yaml`** | commit | **Metadatos por token:** logo, descripción, `next_unlock` (fecha, manual) y `unlock_pct` (% del circulante). |
+| **`config/settings.local.yaml`** | ignorado | **Datos personales** (se fusiona *deep-merge* sobre `settings.yaml`): `binance_account.manual_holdings` (capital no legible por API, p. ej. grid bots), `cost_basis` (precio medio real por token), `fx_to_usd` (p. ej. COP), `net_deployed_usd`, y el bloque **`fiscal`** (jurisdicción, tarifas, UVT, TRM, diario de tesis y escalera de salida). |
 
-> **IDs de activos:** cada `coingecko_id` / `defillama` en `settings.yaml` está marcado
-> `verified: false`. Confirmar cada ID contra la API en vivo antes de confiar en un
-> número para una decisión (decisión abierta de sección 12).
+> **IDs de activos:** cada `coingecko_id` / `defillama` en `settings.yaml` está marcado `verified: true/false`.
+> Confirmar cada ID contra la API en vivo antes de confiar en un número para una decisión.
+>
+> **Ejemplos de cambios comunes:** añadir un activo → nueva entrada en `settings.yaml` (`assets`) +
+> `assets_meta.yaml`; cambiar la cartera objetivo → `portfolio.target_weights_asset`; ajustar cuándo
+> salta una alerta → su regla en `alerts.rules` + el umbral en `indicators.*`; mover el aporte mensual →
+> `dca.monthly_contribution_min_usd`.
 
 ## Uso
 

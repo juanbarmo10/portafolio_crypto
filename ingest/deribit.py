@@ -1,4 +1,4 @@
-"""Deribit ingester: DVOL implied-volatility index (CLAUDE.md sections 4, 8; IDEAS_MEJORAS A5).
+"""Deribit ingester: DVOL implied-volatility index (CLAUDE.md sections 4, 8; RESEARCH.md A5).
 
 Deribit's public API needs no key. DVOL is the options market's implied-volatility index
 for BTC/ETH — the "VIX of crypto" — and adds what perpetual funding/OI cannot see: what

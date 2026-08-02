@@ -1,4 +1,4 @@
-"""Blockchain.com on-chain charts ingester (CLAUDE.md sections 4, 8; IDEAS_MEJORAS A10).
+"""Blockchain.com on-chain charts ingester (CLAUDE.md sections 4, 8; RESEARCH.md A10).
 
 Free, keyless BTC network fundamentals — hash rate, difficulty, transaction count,
 active addresses, miners' revenue. These map to checklist level 3 (is BTC's thesis —

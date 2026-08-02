@@ -165,7 +165,7 @@ def test_trade_columns_contract() -> None:
     assert TRADE_COLUMNS[0] == "trade_id" and "fee_currency" in TRADE_COLUMNS
 
 
-# --- Colombian tax layer: thesis journal + exit ladder (FISCAL.md §5) --------
+# --- Colombian tax layer: thesis journal + exit ladder (RESEARCH.md §17) --------
 
 
 def _thesis(thesis_id: str = "t1", falsification: str = "flujos ETF negativos") -> dict:
@@ -180,7 +180,7 @@ def _thesis(thesis_id: str = "t1", falsification: str = "flujos ETF negativos") 
 
 def test_upsert_thesis_log_requires_falsification(conn: sqlite3.Connection) -> None:
     assert upsert_thesis_log(conn, [_thesis()]) == 1
-    # A thesis with no (or blank) falsification criteria is rejected loudly (FISCAL.md §5).
+    # A thesis with no (or blank) falsification criteria is rejected loudly (RESEARCH.md §17).
     with pytest.raises(ValueError):
         upsert_thesis_log(conn, [_thesis("t2", falsification="   ")])
 

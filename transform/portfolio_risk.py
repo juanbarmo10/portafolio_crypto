@@ -1,4 +1,4 @@
-"""Portfolio-risk transforms (IDEAS_MEJORAS Parte B, B2/B3; CLAUDE.md sections 2, 5).
+"""Portfolio-risk transforms (RESEARCH.md (Parte B), B2/B3; CLAUDE.md sections 2, 5).
 
 Real diversification is by **failure mode**, not by ticker count (§5). With the backfilled
 daily price history this quantifies it: a **correlation matrix** and **beta to BTC** (B2) plus

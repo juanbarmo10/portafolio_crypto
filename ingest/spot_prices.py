@@ -1,4 +1,4 @@
-"""Multi-exchange spot prices for the Coinbase premium (IDEAS_MEJORAS A8; CLAUDE.md 4, 8).
+"""Multi-exchange spot prices for the Coinbase premium (RESEARCH.md A8; CLAUDE.md 4, 8).
 
 The **Coinbase premium** = (Coinbase price − Binance price) / Binance price. Positive and
 rising = US spot demand (ETFs / treasuries buy on Coinbase) — real, unleveraged conviction,

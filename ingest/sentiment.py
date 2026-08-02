@@ -1,4 +1,4 @@
-"""Sentiment ingester: Crypto Fear & Greed Index (CLAUDE.md sections 4, 8; IDEAS_MEJORAS A6).
+"""Sentiment ingester: Crypto Fear & Greed Index (CLAUDE.md sections 4, 8; RESEARCH.md A6).
 
 Alternative.me publishes a free, keyless, daily Fear & Greed Index (a composite of
 volatility, momentum, volume, dominance and social signals). Used **contrarian and as

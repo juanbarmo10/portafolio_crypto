@@ -1,4 +1,4 @@
-"""TRM ingester: Tasa Representativa del Mercado COP/USD (FISCAL.md Paso 2).
+"""TRM ingester: Tasa Representativa del Mercado COP/USD (RESEARCH.md §17 Paso 2).
 
 The DIAN calculates crypto taxes in Colombian pesos, so every cost basis and disposal
 must be converted at the official TRM of the exact day (Art. 269 E.T. — the cost is frozen
@@ -62,7 +62,7 @@ def parse_trm(
 
 
 class TrmIngester(Ingester):
-    """Fetch the COP/USD TRM daily history (public, keyless). FISCAL.md Paso 2."""
+    """Fetch the COP/USD TRM daily history (public, keyless). RESEARCH.md §17 Paso 2."""
 
     source = "banrep"
 

@@ -164,7 +164,7 @@ def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[
             symbol, side, amount, cost = f"{from_a}/{to_a}", "sell", from_amt, to_amt
         else:
             # crypto->crypto or stable->stable: no USD cost basis to derive here. NOT lotted;
-            # crypto->crypto is a taxable permuta (FISCAL.md §2.2) — counted/warned, not silent.
+            # crypto->crypto is a taxable permuta (RESEARCH.md §17) — counted/warned, not silent.
             continue
         rows.append(
             {
@@ -186,7 +186,7 @@ def parse_convert(records: list[dict], stables: set[str] | None = None) -> list[
 
 
 def count_unlotted_converts(records: list[dict], stables: set[str] | None = None) -> int:
-    """Count crypto→crypto Converts that :func:`parse_convert` cannot lot (FISCAL.md §2.2).
+    """Count crypto→crypto Converts that :func:`parse_convert` cannot lot (RESEARCH.md §17).
 
     A crypto→crypto Convert is a **taxable permuta** (Art. 90 E.T.) that resets the maturity
     clock but has no USD cost basis in the record itself, so it is not turned into a trade.
@@ -527,7 +527,7 @@ class BinanceAccountIngester(Ingester):
             if n_swaps:
                 log.warning(
                     "Binance: %d crypto→crypto Convert(s) NOT lotted — taxable permutas "
-                    "(FISCAL.md §2.2). Regístralas a mano (valor de mercado + TRM) con el contador.",
+                    "(RESEARCH.md §17). Regístralas a mano (valor de mercado + TRM) con el contador.",
                     n_swaps,
                 )
         except Exception:  # noqa: BLE001 — convert must not sink the spot trades

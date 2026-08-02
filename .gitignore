@@ -39,8 +39,8 @@ streamlit_run.log
 .vscode/
 *.swp
 
-# Internal design docs (personal context) — not for the public repo
+# Internal design docs (personal context) — not for the public repo.
+# The public design doc is README.md; these two hold instructions-for-Claude and
+# the deep technical/fiscal reference (ARCHITECTURE/FISCAL/IDEAS_MEJORAS were merged in).
 CLAUDE.md
 RESEARCH.md
-IDEAS_MEJORAS.md
-FISCAL.md

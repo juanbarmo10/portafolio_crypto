@@ -1,4 +1,4 @@
-"""Tests for IDEAS_MEJORAS Parte A — new free data sources (CLAUDE.md section 10).
+"""Tests for RESEARCH.md (Parte A) — new free data sources (CLAUDE.md section 10).
 
 Covers the pure parsers (no network) and the DB-backed transforms (seeded temp SQLite):
     A1  Fed net liquidity (unit scaling + as-of alignment)

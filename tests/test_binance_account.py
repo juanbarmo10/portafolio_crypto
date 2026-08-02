@@ -78,7 +78,7 @@ def test_parse_convert_buy_sell_and_skips() -> None:
 
 
 def test_count_unlotted_converts_flags_crypto_to_crypto() -> None:
-    # Only crypto->crypto counts (a taxable permuta, FISCAL.md §2.2): stable legs are excluded.
+    # Only crypto->crypto counts (a taxable permuta, RESEARCH.md §17): stable legs are excluded.
     records = [
         {"orderStatus": "SUCCESS", "fromAsset": "SOL", "toAsset": "LINK"},   # crypto->crypto ✓
         {"orderStatus": "SUCCESS", "fromAsset": "USDT", "toAsset": "BTC"},   # buy (stable leg)

@@ -60,7 +60,7 @@ def build_ingesters(
             shared/cloud database (e.g. Neon feeding a public dashboard) never receives
             your real holdings/trades. Public market data only.
     """
-    # All of these are FREE, keyless public market data (IDEAS_MEJORAS Parte A), so they
+    # All of these are FREE, keyless public market data (RESEARCH.md (Parte A)), so they
     # run in both private and public/cloud modes.
     ingesters: list[Ingester] = [
         CoinGeckoIngester(settings),
@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Ingest complete: %d observations upserted, %d ingester(s) failed.",
                  total, len(failed))
 
-        # Rebuild the personal tax lots from trades+TRM (FISCAL.md). LOCAL only: never in
+        # Rebuild the personal tax lots from trades+TRM (RESEARCH.md §17). LOCAL only: never in
         # --public mode (the shared/cloud DB must not receive personal fiscal data). Isolated
         # so a fiscal error never fails the ingest pipeline.
         if not args.public and settings.raw.get("fiscal", {}).get("enabled") and not args.only:

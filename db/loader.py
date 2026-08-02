@@ -245,7 +245,7 @@ def upsert_capital_flows(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     return len(records)
 
 
-# --- Colombian tax layer: thesis journal + exit ladder (FISCAL.md §5) -------
+# --- Colombian tax layer: thesis journal + exit ladder (RESEARCH.md §17) -------
 # PERSONAL, LOCAL only (never synced to a shared/cloud DB). The tax lots/disposals themselves
 # are computed on demand from `trades` (transform/fiscal.py) and not persisted; only these two
 # hand-written journals live in tables, since the views read them back.
@@ -303,7 +303,7 @@ ON CONFLICT(ladder_id) DO UPDATE SET
 
 
 def upsert_thesis_log(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Upsert thesis-journal entries (keyed by thesis_id). FISCAL.md §5.
+    """Upsert thesis-journal entries (keyed by thesis_id). RESEARCH.md §17.
 
     Enforces the discipline rule at the loader too: an entry **without** a non-empty
     ``falsification_criteria`` is rejected loudly (no thesis is saved without a way to be wrong).
@@ -312,11 +312,11 @@ def upsert_thesis_log(conn: sqlite3.Connection, rows: list[dict]) -> int:
         if not str(r.get("falsification_criteria") or "").strip():
             raise ValueError(
                 f"thesis_log '{r.get('thesis_id')}' has no falsification_criteria — "
-                "a thesis must state what would prove it wrong (FISCAL.md §5)."
+                "a thesis must state what would prove it wrong (RESEARCH.md §17)."
             )
     return _upsert_records(conn, _UPSERT_THESIS_SQL, THESIS_LOG_COLUMNS, rows, False, "thesis-log entries")
 
 
 def upsert_exit_ladder(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Upsert exit-ladder tranches (keyed by ladder_id). FISCAL.md §5."""
+    """Upsert exit-ladder tranches (keyed by ladder_id). RESEARCH.md §17."""
     return _upsert_records(conn, _UPSERT_EXIT_LADDER_SQL, EXIT_LADDER_COLUMNS, rows, False, "exit-ladder tranches")

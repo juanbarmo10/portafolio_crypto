@@ -87,12 +87,12 @@ CREATE TABLE IF NOT EXISTS exit_rules (
     created_at  TEXT NOT NULL
 );
 
--- Colombian tax layer (FISCAL.md). PERSONAL data: never synced to a shared/cloud DB
+-- Colombian tax layer (RESEARCH.md §17). PERSONAL data: never synced to a shared/cloud DB
 -- (like trades/holdings) and hidden under PUBLIC_MODE. Portable SQLite<->Postgres (TEXT/REAL only).
 -- NOTE: tax lots/disposals/consumption are computed on demand from `trades` (transform/fiscal.py
 -- build_tax_lots) and consumed in memory — they are NOT persisted, so no tables here for them.
 
--- Thesis journal (FISCAL.md §5): what you WROTE and when — NOT the computed semaphore.
+-- Thesis journal (RESEARCH.md §17): what you WROTE and when — NOT the computed semaphore.
 -- falsification_criteria is NOT NULL by design: no thesis is saved without a way to be wrong.
 CREATE TABLE IF NOT EXISTS thesis_log (
     thesis_id              TEXT PRIMARY KEY,
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS thesis_log (
     outcome_pnl            REAL             -- on close: did you make money? (SEPARATE)
 );
 
--- Exit ladder (FISCAL.md §5): sell tranches written TODAY, in cold blood.
+-- Exit ladder (RESEARCH.md §17): sell tranches written TODAY, in cold blood.
 CREATE TABLE IF NOT EXISTS exit_ladder (
     ladder_id     TEXT PRIMARY KEY,
     asset         TEXT NOT NULL,

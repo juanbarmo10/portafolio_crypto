@@ -42,9 +42,11 @@ pytest && ruff check .
 
 ## Estado
 
-**Fases 0-4 completadas; Fase 5 (análisis e interacción) — Prioridades 1 y 2 listas; ampliación
-de fuentes gratuitas (Parte A) y capa de análisis avanzado (Parte B: semáforo de régimen, drift,
-riesgo de cartera, scorecard conductual y ayudante de aporte mensual) integradas.**
+**Fases 0-4 completadas; Fase 5 (análisis e interacción) en curso.** Integradas: ampliación de
+fuentes gratuitas (**Parte A**), capa de análisis avanzado (**Parte B**: semáforo de régimen, drift,
+riesgo de cartera, scorecard conductual, aporte mensual), asignador del DCA (**Parte G**), validación
+ampliada con corrección FDR (**Parte C**) y una **capa fiscal opcional local** (lotes FIFO, PnL en dos
+divisas, simulador de venta) — desactivada en el despliegue público.
 
 Incluye hasta ahora:
 - Estructura de paquetes (`core`, `ingest`, `db`, `transform`, `alerts`, `validation`, `app`).
@@ -112,6 +114,29 @@ Incluye hasta ahora:
   gratis vs. los 365 d de CoinGecko). **Backtest honesto** (108 meses): el drift bate al reparto fijo
   (P=1.00), al RSI (0.33) y al momentum (0.03) → combinar osciladores no aporta; el *tilt* de
   cheapness queda **sin construir** hasta que un backtest lo justifique.
+- **Validación ampliada + corrección FDR (Parte C):** una **batería de señales** de nivel 1-2
+  (liquidez neta, stablecoins, racha de flujos ETF, rotación ETH/BTC, funding z) validadas a la vez,
+  con **corrección de Benjamini-Hochberg** para controlar la tasa de falsos descubrimientos del
+  *multiple testing*. Clave metodológica: se cuentan **episodios no solapados**, no días sueltos
+  (autocorrelados) — la versión ingenua marcaba la liquidez neta como significativa (+5.8 pp) por pura
+  autocorrelación; al colapsar en episodios independientes el edge se desvanece. **Resultado honesto:
+  ninguna señal supera el umbral FDR** con este historial, que es justo lo que justifica quedarse con
+  la regla más simple (sección 8). Además, **discrepancia entre fuentes** (C4): el mismo activo en
+  CoinGecko/Binance/Coinbase difiere ~0.1-0.3 % → por eso no se mezclan fuentes en una serie (sección 9).
+- **Interacción del aporte (Fase 5):** en la lista de compra, un **deslizador de "efectivo a
+  depositar"** reparte solo ese depósito entre los activos infra-ponderados (sin tocar la caja);
+  columna **"Peso sin efectivo"** en la cartera real (peso del token sobre el capital invertido,
+  ignorando stablecoins); y `run_ingest.py --only <fuente>` para refrescar una sola fuente (p. ej.
+  las tenencias tras una compra) en segundos en vez del pipeline completo.
+- **Capa fiscal opcional (local, configurable por jurisdicción; desactivada por defecto):** ingesta de
+  la tasa de cambio oficial, **lotes de adquisición inmutables** con costo congelado y **consumo
+  FIFO/PEPS**, **PnL en las dos divisas lado a lado** (una pérdida en USD puede ser ganancia gravable
+  en moneda local si la divisa se movió), **maduración** de la posición hacia el largo plazo,
+  **simulador de venta** que estima el régimen impositivo *antes* de vender, contador de enajenaciones,
+  diario de tesis (con criterio de falsación obligatorio) y escalera de salida. **Estima, no liquida:**
+  toda cifra fiscal lleva la etiqueta *estimado — verificar con contador*, es **solo local** y nunca se
+  sincroniza al despliegue público. Es un ejemplo de dominio; las tarifas concretas quedan fuera del
+  panel.
 - Indicadores: dominancia BTC (+ variación 30 d/1 año), variación 24h/7d/30d, distancia al ATH,
   MC/TVL, dilución, **funding z-score (90 d)**, **estado del rally** (divergencia precio/OI) y
   **racha de flujos ETF**.
@@ -143,11 +168,12 @@ Incluye hasta ahora:
 - **Validación de señales** (`run_validation.py`): retornos forward 7/30/90 d, baseline y test de
   significancia por bootstrap; z-scores point-in-time (sin look-ahead, sección 9). Ver *Validación* abajo.
 - Logging estructurado con nivel configurable por env var (`LOG_LEVEL`).
-- Tests (`pytest`, 185) de esquema, idempotencia, config (incl. override local), indicadores,
-  rally-quality, alertas, validación, calendario de releases FRED, invalidación de tesis y value
-  accrual, parsers de ingesta (incl. fixture Farside congelado y las fuentes de Parte A: liquidez
-  neta con escalado de unidades, basis, premium, rotación, DVOL, Fear & Greed, on-chain), holdings
-  y humo de render.
+- Tests (`pytest`, 217) de esquema, idempotencia, config (incl. override local), indicadores,
+  rally-quality, riesgo de cartera, alertas, validación (incl. batería de señales + FDR), calendario
+  de releases FRED, invalidación de tesis y value accrual, parsers de ingesta (incl. fixture Farside
+  congelado y las fuentes de Parte A: liquidez neta con escalado de unidades, basis, premium,
+  rotación, DVOL, Fear & Greed, on-chain), la capa fiscal (lotes FIFO, congelado de costo, split de
+  régimen, divergencia de divisa, Formulario 160), holdings y humo de render.
 
 ## Requisitos
 

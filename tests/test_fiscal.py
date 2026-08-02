@@ -18,7 +18,12 @@ import pytest
 
 from core.config import load_settings
 from db.loader import init_db, upsert_observations, upsert_trades
-from transform.fiscal import build_tax_lots, cop_usd_pnl_table
+from transform.fiscal import (
+    build_tax_lots,
+    cop_usd_pnl_table,
+    maturity_summary,
+    simulate_peps_sale,
+)
 
 
 @pytest.fixture()
@@ -123,3 +128,63 @@ def test_cop_usd_divergence(conn, settings) -> None:
     assert row["pnl_usd"] < 0     # 90 - 100 = -10 in USD
     assert row["pnl_cop"] > 0     # 432,000 - 400,000 = +32,000 in COP
     assert df.attrs["patrimonio_cop"] == pytest.approx(100.0 * 4000.0)  # net worth at COST
+
+
+# --- Fase B: maturation + PEPS sale simulator -------------------------------
+
+
+def _two_lots(conn) -> None:
+    """One matured lot (bought 2023) + one recent lot (2025), with TRM and a current price."""
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2023-01-01T00:00:00+00:00", 4000.0),
+        _trm("2025-06-01T00:00:00+00:00", 4100.0),
+        _trm("2026-08-02T00:00:00+00:00", 5000.0),           # latest TRM
+        _price("bitcoin", "2026-08-02T00:00:00+00:00", 50000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("old", "buy", "2023-01-01T00:00:00+00:00", 0.01, 30000.0, 300.0),  # matured
+        _trade("new", "buy", "2025-06-01T00:00:00+00:00", 0.01, 62000.0, 620.0),  # not matured
+    ]))
+
+
+def test_maturity_summary_units_and_next(conn, settings) -> None:
+    _two_lots(conn)
+    row = maturity_summary(conn, settings).iloc[0]
+    assert row["units_open"] == pytest.approx(0.02)
+    assert row["units_matured"] == pytest.approx(0.01)     # only the 2023 lot has matured
+    assert row["pct_matured"] == pytest.approx(50.0)
+    assert row["next_maturity"][:10] == "2027-06-01"       # the 2025 lot's maturity
+    assert row["days_to_next"] > 0
+
+
+def test_simulate_peps_regime_split_and_tax(conn, settings) -> None:
+    _two_lots(conn)
+    # Sell 0.015: consumes the whole matured lot (0.01) + half the recent lot (0.005).
+    sim = simulate_peps_sale(conn, settings, "BTC", 0.015)
+    assert sim["has_data"] is True
+    assert sim["shortfall"] == pytest.approx(0.0)
+    assert len(sim["consumed"]) == 2
+    # Matured lot: proceeds 0.01*50000*5000=2.5M, cost 300*4000=1.2M -> +1.3M occasional.
+    assert sim["occasional_gain_cop"] == pytest.approx(1_300_000.0)
+    assert sim["tax_occasional_cop"] == pytest.approx(1_300_000.0 * 0.15)  # 15%
+    # Ordinary marginal rate unset (0) -> tax not estimable, reported as None (honest).
+    assert sim["tax_ordinary_cop"] is None
+    regimes = {c["lot_id"]: c["regime"] for c in sim["consumed"]}
+    assert regimes["old"] == "ganancia_ocasional"
+    assert regimes["new"] == "renta_ordinaria"
+
+
+def test_simulate_shortfall_beyond_lots(conn, settings) -> None:
+    _two_lots(conn)  # 0.02 BTC lotted
+    sim = simulate_peps_sale(conn, settings, "BTC", 0.05)  # ask more than we hold
+    assert sim["sold_units"] == pytest.approx(0.02)
+    assert sim["shortfall"] == pytest.approx(0.03)
+
+
+def test_simulate_no_price_no_data(conn, settings) -> None:
+    # TRM + a lot but NO current price -> cannot value the sale.
+    upsert_observations(conn, pd.DataFrame([_trm("2025-01-01T00:00:00+00:00", 4000.0)]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.01, 60000.0, 600.0),
+    ]))
+    assert simulate_peps_sale(conn, settings, "BTC", 0.01)["has_data"] is False

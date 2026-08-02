@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -217,4 +218,154 @@ def persist_tax_lots(conn: sqlite3.Connection, settings: Settings) -> dict[str, 
         "lots": upsert_tax_lots(conn, built["lots"]),
         "disposals": upsert_tax_disposals(conn, built["disposals"]),
         "consumption": upsert_tax_lot_consumption(conn, built["consumption"]),
+    }
+
+
+# --- Fase B: maturation metrics + pre-sale PEPS simulator (FISCAL.md §6.2/§6.3) --------------
+
+
+def maturity_summary(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
+    """Per-asset maturation, measured in **units** (not value) — FISCAL.md §6.3.
+
+    A lot matures ``long_term_months`` (24) after acquisition; once matured, selling it is
+    *ganancia ocasional* (15%) instead of *renta ordinaria* (progressive, up to 39%). Reports
+    open units, matured units, % matured, and the next lot's maturity date/days — the timing
+    that ``lot_maturity_soon`` will alert on. Columns: [asset, units_open, units_matured,
+    pct_matured, cost_cop_open, next_maturity, days_to_next].
+    """
+    built = build_tax_lots(conn, settings)
+    today = pd.Timestamp(datetime.now(timezone.utc))
+    agg: dict[str, dict[str, Any]] = {}
+    for lot in built["lots"]:
+        rem = lot["units_remaining"]
+        if rem <= 1e-12:
+            continue
+        a = agg.setdefault(
+            lot["asset"], {"open": 0.0, "matured": 0.0, "cost_cop": 0.0, "next": None}
+        )
+        a["open"] += rem
+        matures = pd.Timestamp(lot["matures_at"])
+        if matures <= today:
+            a["matured"] += rem
+        elif a["next"] is None or matures < a["next"]:
+            a["next"] = matures
+        if lot["cost_cop"] is not None and lot["units"]:
+            a["cost_cop"] += lot["cost_cop"] * (rem / lot["units"])
+
+    rows = []
+    for asset, a in agg.items():
+        nxt = a["next"]
+        rows.append({
+            "asset": asset,
+            "units_open": a["open"],
+            "units_matured": a["matured"],
+            "pct_matured": (a["matured"] / a["open"] * 100.0) if a["open"] else 0.0,
+            "cost_cop_open": a["cost_cop"],
+            "next_maturity": None if nxt is None else nxt.isoformat(),
+            "days_to_next": None if nxt is None else int((nxt - today).days),
+        })
+    df = pd.DataFrame(
+        rows,
+        columns=["asset", "units_open", "units_matured", "pct_matured", "cost_cop_open",
+                 "next_maturity", "days_to_next"],
+    )
+    return df.sort_values("cost_cop_open", ascending=False).reset_index(drop=True) if not df.empty else df
+
+
+def simulate_peps_sale(
+    conn: sqlite3.Connection, settings: Settings, asset: str, units: float,
+    price_usd: float | None = None,
+) -> dict[str, Any]:
+    """The most valuable function (FISCAL.md §6.2): "if I sell N units of X", **before** selling.
+
+    Consumes the oldest open lots (PEPS) at today's price and TRM, and splits the result into
+    **ganancia ocasional** (lots matured ≥24 months → 15%) vs **renta ordinaria** (< 24 months →
+    your estimated marginal), in COP and USD side by side. Tax is estimated only on positive
+    gains per regime; the ordinary tax is ``None`` until you set a real marginal rate (it stays
+    an ESTIMATE either way — FISCAL.md §0/§12). ``shortfall`` = units beyond your lotted holdings
+    (acquired via Earn/Convert, no cost basis in ``trades``). ``has_data`` False if no price/TRM.
+
+    Returns a dict with proceeds/cost/gain (COP+USD), the per-regime split, tax estimates and
+    the list of consumed lots.
+    """
+    fiscal = settings.raw.get("fiscal", {})
+    occ_rate = float(fiscal.get("occasional_gain_rate_pct", 15.0)) / 100.0
+    ord_rate = float(fiscal.get("ordinary_marginal_rate_pct", 0.0)) / 100.0
+    ord_is_estimate = bool(fiscal.get("ordinary_rate_is_estimate", True))
+
+    built = build_tax_lots(conn, settings)
+    lots = sorted(
+        (lot for lot in built["lots"] if lot["asset"] == asset and lot["units_remaining"] > 1e-12),
+        key=lambda lot: lot["acquired_at"],
+    )
+    open_units = sum(lot["units_remaining"] for lot in lots)
+    trm = _trm_series(conn, settings)
+    trm_now = float(trm.iloc[-1]) if not trm.empty else None
+    price = price_usd if price_usd is not None else _current_price_usd(conn, settings, asset)
+    if price is None or trm_now is None or units <= 0:
+        return {"has_data": False, "asset": asset, "open_units": open_units}
+
+    unit_proceeds_usd = float(price)
+    unit_proceeds_cop = float(price) * trm_now
+    today = pd.Timestamp(datetime.now(timezone.utc))
+    sold_units = min(units, open_units)
+    shortfall = max(0.0, units - open_units)
+
+    consumed: list[dict[str, Any]] = []
+    occ_cop = occ_usd = ord_cop = ord_usd = 0.0
+    cost_cop_tot = cost_usd_tot = 0.0
+    remaining = sold_units
+    for lot in lots:
+        if remaining <= 1e-12:
+            break
+        take = min(lot["units_remaining"], remaining)
+        frac = take / lot["units"] if lot["units"] else 0.0
+        cost_cop_p = (lot["cost_cop"] or 0.0) * frac
+        cost_usd_p = (lot["cost_usd"] or 0.0) * frac
+        gain_cop = unit_proceeds_cop * take - cost_cop_p
+        gain_usd = unit_proceeds_usd * take - cost_usd_p
+        matured = pd.Timestamp(lot["matures_at"]) <= today
+        consumed.append({
+            "lot_id": lot["lot_id"], "acquired_at": lot["acquired_at"], "units": take,
+            "cost_cop": cost_cop_p, "gain_cop": gain_cop, "gain_usd": gain_usd,
+            "regime": "ganancia_ocasional" if matured else "renta_ordinaria",
+        })
+        if matured:
+            occ_cop += gain_cop
+            occ_usd += gain_usd
+        else:
+            ord_cop += gain_cop
+            ord_usd += gain_usd
+        cost_cop_tot += cost_cop_p
+        cost_usd_tot += cost_usd_p
+        remaining -= take
+
+    tax_occ_cop = max(0.0, occ_cop) * occ_rate
+    tax_ord_cop = (max(0.0, ord_cop) * ord_rate) if ord_rate > 0 else None
+    return {
+        "has_data": True,
+        "asset": asset,
+        "units_requested": float(units),
+        "sold_units": sold_units,
+        "shortfall": shortfall,
+        "open_units": open_units,
+        "price_usd": unit_proceeds_usd,
+        "trm_now": trm_now,
+        "proceeds_usd": unit_proceeds_usd * sold_units,
+        "proceeds_cop": unit_proceeds_cop * sold_units,
+        "cost_usd": cost_usd_tot,
+        "cost_cop": cost_cop_tot,
+        "gain_usd": occ_usd + ord_usd,
+        "gain_cop": occ_cop + ord_cop,
+        "occasional_gain_cop": occ_cop,
+        "occasional_gain_usd": occ_usd,
+        "ordinary_gain_cop": ord_cop,
+        "ordinary_gain_usd": ord_usd,
+        "occ_rate_pct": occ_rate * 100.0,
+        "ord_rate_pct": ord_rate * 100.0,
+        "ord_is_estimate": ord_is_estimate,
+        "tax_occasional_cop": tax_occ_cop,
+        "tax_ordinary_cop": tax_ord_cop,
+        "tax_total_cop": tax_occ_cop + (tax_ord_cop or 0.0),
+        "consumed": consumed,
     }

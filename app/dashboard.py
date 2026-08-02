@@ -72,7 +72,12 @@ from transform.indicators import (  # noqa: E402
     wallet_pnl_table,
     wallet_value_history,
 )
-from transform.fiscal import build_tax_lots, cop_usd_pnl_table  # noqa: E402
+from transform.fiscal import (  # noqa: E402
+    build_tax_lots,
+    cop_usd_pnl_table,
+    maturity_summary,
+    simulate_peps_sale,
+)
 from validation.backtest import funding_zscore_backtest, signal_battery  # noqa: E402
 from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
 from transform.rally_quality import (  # noqa: E402
@@ -1977,6 +1982,91 @@ def _section_fiscal(conn, settings) -> None:
                 ),
             },
         )
+
+    # Maturation toward 24 months (measured in units, not value).
+    mat = maturity_summary(conn, settings)
+    if not mat.empty:
+        st.markdown("**Maduración a 24 meses** (en unidades; ≥24 m → ganancia ocasional 15%)")
+        mat_rows = [{
+            "Logo": settings.meta_for(r["asset"]).get("logo_url") or "",
+            "Activo": r["asset"],
+            "% madurado": f"{r['pct_matured']:.0f}%",
+            "Maduras / abiertas": f"{r['units_matured']:.4f} / {r['units_open']:.4f}",
+            "Próx. maduración": "—" if r["next_maturity"] is None else str(r["next_maturity"])[:10],
+            "Días": "—" if r["days_to_next"] is None else str(r["days_to_next"]),
+        } for r in mat.to_dict("records")]
+        st.dataframe(
+            pd.DataFrame(mat_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Logo": st.column_config.ImageColumn("", width="small"),
+                "Días": st.column_config.TextColumn(
+                    help="Días hasta que el próximo lote cumple 24 meses. Vender pocas semanas antes "
+                    "puede costar ~20 pp más de tarifa (renta ordinaria vs. ocasional)."
+                ),
+            },
+        )
+
+    # Pre-sale PEPS simulator — the most valuable piece: see the tax consequence BEFORE selling.
+    if lots:
+        st.markdown("**Simulador de venta (PEPS)** — antes de vender")
+        open_by_asset = {}
+        for lot in lots:
+            open_by_asset[lot["asset"]] = open_by_asset.get(lot["asset"], 0.0) + lot["units_remaining"]
+        sc1, sc2 = st.columns([1, 2])
+        sim_asset = sc1.selectbox("Activo", sorted(open_by_asset), key="fiscal_sim_asset")
+        max_u = float(open_by_asset[sim_asset])
+        sim_units = sc2.slider(
+            "Unidades a vender", min_value=0.0, max_value=round(max_u, 6),
+            value=round(max_u, 6), step=round(max_u / 100, 6) or 1e-6, format="%.6f",
+            key="fiscal_sim_units",
+        )
+        sim = simulate_peps_sale(conn, settings, sim_asset, sim_units)
+        if sim.get("has_data"):
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Ingreso (proceeds)", _fmt_cop(sim["proceeds_cop"]),
+                      help=f"≈ {_fmt_usd(sim['proceeds_usd'])} · a precio y TRM de hoy.")
+            m2.metric("Ganancia fiscal COP", f"{sim['gain_cop']:+,.0f}",
+                      help=f"USD {sim['gain_usd']:+,.0f}. Proceeds − costo congelado (Art. 269).")
+            tax_txt = _fmt_cop(sim["tax_total_cop"]) if sim["tax_ordinary_cop"] is not None \
+                else f"≥ {_fmt_cop(sim['tax_occasional_cop'])}"
+            m3.metric("Impuesto estimado COP", tax_txt,
+                      help="ESTIMADO. Solo sobre ganancias positivas por régimen.")
+            reg1, reg2 = st.columns(2)
+            reg1.markdown(
+                f"**Ganancia ocasional** (≥24 m): {sim['occasional_gain_cop']:+,.0f} COP → "
+                f"15% = {_fmt_cop(sim['tax_occasional_cop'])}"
+            )
+            if sim["tax_ordinary_cop"] is None:
+                reg2.markdown(
+                    f"**Renta ordinaria** (<24 m): {sim['ordinary_gain_cop']:+,.0f} COP → "
+                    "impuesto **no calculable** (fija tu marginal con el contador)"
+                )
+            else:
+                reg2.markdown(
+                    f"**Renta ordinaria** (<24 m): {sim['ordinary_gain_cop']:+,.0f} COP → "
+                    f"{sim['ord_rate_pct']:.0f}% = {_fmt_cop(sim['tax_ordinary_cop'])}"
+                )
+            if sim["shortfall"] > 1e-9:
+                st.caption(
+                    f"⚠️ {sim['shortfall']:.6f} unidades sin lote (adquiridas por Earn/Convert, sin "
+                    "costo base en `trades`): excluidas del cálculo."
+                )
+            if sim["consumed"]:
+                cons = pd.DataFrame([{
+                    "Lote": c["lot_id"][:16],
+                    "Adquirido": str(c["acquired_at"])[:10],
+                    "Unidades": f"{c['units']:.6f}",
+                    "Costo COP": _fmt_cop(c["cost_cop"]),
+                    "Ganancia COP": f"{c['gain_cop']:+,.0f}",
+                    "Régimen": "Ocasional (15%)" if c["regime"] == "ganancia_ocasional" else "Ordinaria",
+                } for c in sim["consumed"]])
+                st.dataframe(cons, hide_index=True, width="stretch")
+            st.caption(
+                "**ESTIMADO — verificar con contador.** Simula vender hoy a precio de mercado (CoinGecko) "
+                "y TRM de hoy, consumiendo los lotes más antiguos (PEPS). No ejecuta ninguna orden."
+            )
 
     # Disposals (sells/swaps) with their PEPS regime split, if any.
     if built["consumption"]:

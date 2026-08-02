@@ -853,8 +853,13 @@ def _section_market_structure(conn, settings) -> None:
         )
 
 
-def _section_thesis(conn, settings) -> None:
-    """Level 3 — thesis health. All tokens, grouped by category; interactive grid."""
+def _section_thesis(conn, settings, include_analysis: bool = True) -> None:
+    """Level 3 — thesis health. All tokens, grouped by category; interactive grid.
+
+    ``include_analysis`` appends the value-accrual + on-chain blocks (quarterly *análisis*, not
+    part of a deploy decision). The multipage layout renders the TVL table + invalidation board
+    on "Desplegar capital" (``include_analysis=False``) and value accrual on "Análisis".
+    """
     st.header("4 · Tesis — TVL por categoría", anchor="tesis")
     df = thesis_tvl_table(conn, settings)
     if df.empty:
@@ -933,8 +938,9 @@ def _section_thesis(conn, settings) -> None:
             _drilldown_chart(conn, ref[0], ref[1], ref[2])
 
     _thesis_invalidation_board(conn, settings)
-    _value_accrual_view(conn, settings)
-    _btc_onchain_block(conn, settings)
+    if include_analysis:
+        _value_accrual_view(conn, settings)
+        _btc_onchain_block(conn, settings)
 
 
 # A10: friendly labels for the Blockchain.com chart slugs.
@@ -1178,15 +1184,13 @@ def _fmt_amount(a: float | None) -> str:
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
-def _section_execution(conn, settings, holdings=None, built=None) -> None:
-    """Level 4 — real account (read-only) + DCA plan.
+def _real_account_view(conn, settings, holdings=None, built=None) -> None:
+    """Real Binance account (read-only, level 4): value/fees metrics, the positions table (with
+    the fiscal "Madura en" column when ``built`` is given) and allocation donuts.
 
     ``holdings``/``built`` may be passed in (computed once in ``main``) to avoid recomputing the
     tax lots; both are computed on demand if omitted.
     """
-    st.header("5 · Ejecución — cartera real y plan DCA", anchor="ejecucion")
-
-    # --- Real account (read-only Binance sync) -------------------------------
     st.subheader("Cartera real (Binance, solo lectura)")
     if holdings is None:
         holdings = holdings_table(conn, settings)
@@ -1288,25 +1292,12 @@ def _section_execution(conn, settings, holdings=None, built=None) -> None:
                 "sola apuesta. `Efectivo` = stablecoins; `Otros` = activos fuera de sección 5 (p. ej. WBETH)."
             )
 
-    # --- PnL per token + hold-simulation history -----------------------------
-    _wallet_pnl_view(conn, settings, holdings)
+    # The donuts end the real-account view. PnL / drift / risk / scorecard / shopping-list /
+    # DCA plan are composed by the page functions in `main` (multipage layout).
 
-    # --- Drift vs. objetivo (B4) ---------------------------------------------
-    _drift_view(conn, settings, holdings)
 
-    # --- Riesgo de cartera (B2/B3) -------------------------------------------
-    _risk_view(conn, settings, holdings)
-
-    # --- Scorecard conductual (B6) -------------------------------------------
-    _scorecard_view(conn, settings)
-
-    # --- ¿Despliego el aporte de este mes? (B7) ------------------------------
-    _contribution_advice_view(conn, settings, holdings)
-
-    # --- Lista de compra del mes (Parte G — asignador del DCA) ----------------
-    _dca_shopping_list_view(conn, settings, holdings)
-
-    # --- DCA plan (manual) ---------------------------------------------------
+def _dca_plan_view(conn, settings) -> None:
+    """Manual DCA plan (`dca_plan`): deployed/planned/fees and the next scheduled tranche."""
     st.subheader("Plan DCA")
     status = dca_status(conn, settings)
     c1, c2, c3 = st.columns(3)
@@ -1325,8 +1316,6 @@ def _section_execution(conn, settings, holdings=None, built=None) -> None:
             f"**Próximo tramo:** {nxt['asset']} ({nxt['tier']}) · "
             f"{_fmt_usd(nxt['amount_usd'])} · objetivo {nxt['target_date']}"
         )
-
-    _dca_baseline_view(conn, settings)
 
 
 def _drift_view(conn, settings, holdings) -> None:
@@ -2657,42 +2646,36 @@ def _section_today(conn, settings, holdings, built) -> None:
         st.caption(f"Régimen (niveles 1+2): {icon} **{text}** · score {r['score']:+d} — detalle abajo.")
 
 
-def _sidebar_nav(settings) -> None:
-    """Anchor navigation to jump between sections.
+def _sidebar_note(settings, local: bool) -> None:
+    """Design-rationale note under the multipage navigation (sección 2).
 
-    Links follow the mandated level 1->4 order (sección 2): Macro stays first so the hierarchy
-    (macro overrides thesis) is always visible. The level-4 link is hidden in public mode,
-    where that section is not rendered.
+    ``st.navigation`` renders the page links in the sidebar; this only appends the rationale so
+    the "Hoy vs. Desplegar capital" split (two distinct jobs, §2) stays visible.
     """
-    checklist = []
-    if not settings.public_mode:
-        checklist.append(("🏠 Hoy", "hoy"))
-    checklist += [
-        ("Régimen de mercado", "regimen"),
-        ("1 · Macro", "macro"),
-        ("2 · Radar", "radar"),
-        ("3 · Estructura de mercado", "estructura"),
-        ("4 · Tesis", "tesis"),
-    ]
-    if not settings.public_mode:
-        checklist.append(("5 · Ejecución", "ejecucion"))
-        if settings.raw.get("fiscal", {}).get("enabled"):
-            checklist.append(("6 · Fiscal", "fiscal"))
     with st.sidebar:
-        st.markdown("### Navegación")
-        st.markdown("\n".join(f"- [{label}](#{anchor})" for label, anchor in checklist))
-        st.caption(
-            "**Hoy** = consulta semanal (cartera primero). El checklist 1→4 es el orden de una "
-            "*decisión de compra* (sección 2): el macro manda sobre la tesis del activo."
-        )
         st.divider()
-        st.markdown(
-            "**Extra**\n\n- [Próximos 7 días](#eventos)\n- [Método — validación](#validacion)"
-        )
+        if local:
+            st.caption(
+                "**Hoy** = consulta semanal (cartera primero). **Desplegar capital** recorre el "
+                "checklist 1→4 en orden: es una *decisión de compra* (sección 2), el macro manda "
+                "sobre la tesis. **Método** es showcase, no decisión."
+            )
+        else:
+            st.caption(
+                "Vista pública: la cartera real (nivel 4) está oculta. Ejecuta el panel "
+                "localmente para el seguimiento de la cuenta."
+            )
+        st.caption("Panel *pull*: los datos reflejan el último `run_ingest.py` (sección 2).")
 
 
 def main() -> None:
-    """Entry point for `streamlit run app/dashboard.py`."""
+    """Entry point for `streamlit run app/dashboard.py` — multipage via ``st.navigation``.
+
+    Pages (local): **Hoy** (weekly landing), **Desplegar capital** (checklist 1→4 + lista de
+    compra), **Análisis** (radar, cartera, PnL, riesgo, value accrual, scorecard), **Fiscal**,
+    **Método** (validación). Public deploy exposes only **Mercado** + **Método** (no real
+    account). The §2 hierarchy holds: the *deploy* decision walks 1→4 in order on its own page.
+    """
     st.set_page_config(page_title="Portafolio Crypto - Panel", layout="wide")
     # Streamlit Cloud: expose secrets (DATABASE_URL, PUBLIC_MODE, ...) as env vars so
     # core.config picks them up. No-op locally when there is no secrets file.
@@ -2705,50 +2688,87 @@ def main() -> None:
     settings = load_settings()
     conn = init_db(settings.db_path)
     try:
-        _sidebar_nav(settings)
-        st.title("Portafolio Crypto - Panel")
-        st.caption(
-            "Panel *pull*: los datos reflejan el último `run_ingest.py`. "
-            "Frecuencia de consulta óptima: semanal (sección 2)."
-        )
-        # Level 4 exposes the real Binance account — never on a public deploy. Compute the
-        # holdings and tax lots ONCE and thread them into "Hoy", Ejecución and Fiscal so
-        # build_tax_lots (the expensive step) runs a single time per render.
         local = not settings.public_mode
         fiscal_on = local and bool(settings.raw.get("fiscal", {}).get("enabled"))
+        # Level 4 reads the real account — never on a public deploy. Compute holdings and tax
+        # lots ONCE per rerun and thread them into every page (build_tax_lots is the expensive
+        # step). Only the selected page renders, but the entry script runs top-to-bottom first.
         holdings = holdings_table(conn, settings) if local else pd.DataFrame()
         built = build_tax_lots(conn, settings) if fiscal_on else None
 
-        if local:
+        # --- Page bodies (closures over conn/settings/holdings/built) -----------------------
+        def page_hoy() -> None:
             _section_today(conn, settings, holdings, built)
-            st.divider()
 
-        _section_regime(conn, settings)
-        _events_strip(conn, settings)
-        st.divider()
-        _section_macro(conn, settings)
-        st.divider()
-        _section_portfolio(conn, settings)
-        st.divider()
-        _section_market_structure(conn, settings)
-        st.divider()
-        _section_thesis(conn, settings)
-        if not local:
+        def page_deploy() -> None:
+            # Checklist 1→4 in the mandated order (sección 2), then the deploy decision (nivel 4).
+            _section_regime(conn, settings)
+            _events_strip(conn, settings)
             st.divider()
-            st.caption(
-                "🔒 Vista pública: la sección de cartera real (nivel 4) está oculta. "
-                "Ejecuta el panel localmente para el seguimiento de la cuenta."
-            )
-        else:
+            _section_macro(conn, settings)
             st.divider()
-            _section_execution(conn, settings, holdings=holdings, built=built)
-            if fiscal_on:
-                st.divider()
-                _section_fiscal(conn, settings, built=built)
-        # Método (validación / FDR / discrepancia): showcase, no decisión → al final, plegado.
-        st.divider()
-        with st.expander("📊 Método — validación de señales (showcase, no es decisión)"):
+            _section_market_structure(conn, settings)
+            st.divider()
+            _section_thesis(conn, settings, include_analysis=False)
+            st.divider()
+            _drift_view(conn, settings, holdings)
+            _contribution_advice_view(conn, settings, holdings)
+            _dca_shopping_list_view(conn, settings, holdings)
+            _dca_plan_view(conn, settings)
+
+        def page_analisis() -> None:
+            _section_portfolio(conn, settings)
+            st.divider()
+            _real_account_view(conn, settings, holdings, built)
+            _wallet_pnl_view(conn, settings, holdings)
+            _risk_view(conn, settings, holdings)
+            _value_accrual_view(conn, settings)
+            _btc_onchain_block(conn, settings)
+            _scorecard_view(conn, settings)
+            _dca_baseline_view(conn, settings)
+
+        def page_fiscal() -> None:
+            _section_fiscal(conn, settings, built=built)
+
+        def page_metodo() -> None:
             _section_validation(settings)
+
+        def page_mercado() -> None:  # public deploy: market context only, no real account
+            _section_regime(conn, settings)
+            _events_strip(conn, settings)
+            st.divider()
+            _section_macro(conn, settings)
+            st.divider()
+            _section_portfolio(conn, settings)
+            st.divider()
+            _section_market_structure(conn, settings)
+            st.divider()
+            _section_thesis(conn, settings)
+
+        if local:
+            pages = [
+                st.Page(page_hoy, title="Hoy", icon=":material/home:", url_path="hoy", default=True),
+                st.Page(page_deploy, title="Desplegar capital", icon=":material/checklist:",
+                        url_path="desplegar"),
+                st.Page(page_analisis, title="Análisis", icon=":material/insights:",
+                        url_path="analisis"),
+            ]
+            if fiscal_on:
+                pages.append(st.Page(page_fiscal, title="Fiscal", icon=":material/receipt_long:",
+                                     url_path="fiscal"))
+            pages.append(st.Page(page_metodo, title="Método", icon=":material/science:",
+                                 url_path="metodo"))
+        else:
+            pages = [
+                st.Page(page_mercado, title="Mercado", icon=":material/public:",
+                        url_path="mercado", default=True),
+                st.Page(page_metodo, title="Método", icon=":material/science:", url_path="metodo"),
+            ]
+
+        nav = st.navigation(pages)
+        st.title("Portafolio Crypto - Panel")
+        _sidebar_note(settings, local)
+        nav.run()
     finally:
         conn.close()
 

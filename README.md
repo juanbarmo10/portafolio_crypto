@@ -35,7 +35,7 @@ python run_alerts.py                  # o --dry-run para solo loguear
 python run_validation.py
 
 # 7. Todo en uno (para cron/systemd): ingesta -> alertas (+ validación los domingos).
-./run_daily.sh                        # automatización diaria: ver deploy/README.md
+./run_daily.sh                        # automatización diaria: ver "Despliegue y orquestación"
 
 # Tests + lint.
 pytest && ruff check .
@@ -365,7 +365,7 @@ release o FOMC dentro de 3 días).
 
 ## Rutina diaria (mantener la DB al día)
 
-Con los timers de systemd instalados (ver `deploy/README.md`), **no tienes que ejecutar nada
+Con los timers de systemd instalados (ver "Despliegue y orquestación"), **no tienes que ejecutar nada
 a mano**. Dos timers corren solos cada día:
 
 - `cryptodash.timer` (13:04) → ingesta **local** a SQLite **con** tu cuenta real de Binance.
@@ -403,6 +403,57 @@ systemctl --user start cryptodash-neon.service   # sync público a Neon (lo que 
 Sin timers instalados, el equivalente manual es `./run_daily.sh` (local) y, para Neon,
 `DATABASE_URL='postgresql://…neon…' ./run_neon_sync.sh` (pasa la URL en la misma línea para
 evitar el problema del `&` al sourcear).
+
+## Despliegue y orquestación (instalación)
+
+`run_daily.sh` = **ingesta → alertas** (+ validación los domingos), con log en `logs/daily.log`.
+Arquitectura de despliegue: tu **cron/systemd local** escribe datos **públicos** en una **Postgres
+gestionada (Neon)**; la app en **Streamlit Community Cloud** la lee en modo público. El backend se
+elige solo con `DATABASE_URL` (si está → Postgres; si no → SQLite local). **Privacidad:** la cartera
+de Binance **nunca** sale de tu máquina — la ingesta a Neon usa `--public` (omite la cuenta) y la app
+usa `PUBLIC_MODE=1`.
+
+**systemd user timer (recomendado, con catch-up).** `Persistent=true` recupera una ejecución perdida
+en el próximo arranque, así que basta encender el PC una vez cada día o dos.
+
+```bash
+chmod +x run_daily.sh
+mkdir -p ~/.config/systemd/user
+cp deploy/cryptodash.service deploy/cryptodash.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cryptodash.timer
+loginctl enable-linger "$USER"          # ejecutar aunque no haya sesión iniciada
+# cambiar la hora: editar OnCalendar en ~/.config/systemd/user/cryptodash.timer; desinstalar:
+# systemctl --user disable --now cryptodash.timer && rm ~/.config/systemd/user/cryptodash.{service,timer}
+```
+
+*Alternativa cron* (sin catch-up): `0 13 * * * /ruta/al/repo/run_daily.sh`.
+
+**Desplegar el dashboard (Neon + Streamlit Cloud):**
+1. Crea un proyecto en [neon.tech], copia la cadena `postgresql://...` → tu `DATABASE_URL`.
+2. Puebla Neon con datos públicos desde tu máquina:
+   `pip install -e ".[markets,postgres]"` y
+   `DATABASE_URL="postgresql://...neon..." python run_ingest.py --public`.
+3. Un **segundo timer** sube solo datos públicos a diario (`DATABASE_URL` fuera del repo, en
+   `~/.config/cryptodash/neon.env`, chmod 600):
+   ```bash
+   cp deploy/cryptodash-neon.service deploy/cryptodash-neon.timer ~/.config/systemd/user/
+   systemctl --user daemon-reload && systemctl --user enable --now cryptodash-neon.timer
+   ```
+   Si `DATABASE_URL` está vacío el servicio se salta con aviso (no escribe en SQLite).
+4. En [share.streamlit.io] → *New app* → tu repo, `app/dashboard.py`, deps `requirements.txt`.
+   En **Secrets** (TOML): `DATABASE_URL = "postgresql://...neon..."` y `PUBLIC_MODE = "1"`.
+
+*Nube total (opcional):* un workflow de **GitHub Actions** (cron gratis) puede correr
+`run_ingest.py --public` contra Neon con `DATABASE_URL` como *secret* del repo. **Nunca** pongas
+claves de Binance en un runner alojado.
+
+**Daemon de liquidaciones (opcional, nivel 2).** Binance solo publica liquidaciones por WebSocket
+(`!forceOrder@arr`); `run_liquidations.py` corre como daemon que agrega totales diarios (dato público):
+```bash
+cp deploy/cryptodash-liquidations.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cryptodash-liquidations.service
+```
+Sin el daemon, la línea "Liquidaciones" del panel simplemente no aparece.
 
 ## Alertas por Telegram
 

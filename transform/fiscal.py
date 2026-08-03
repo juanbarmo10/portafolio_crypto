@@ -216,6 +216,46 @@ def cop_usd_pnl_table(
     return df
 
 
+def pnl_attribution_cop(
+    conn: sqlite3.Connection, settings: Settings, built: dict | None = None
+) -> dict[str, Any]:
+    """Split the unrealized **COP** PnL into a crypto (USD price) part and an FX (TRM) part.
+
+    A user living in pesos but holding only USD-denominated assets is implicitly **long USD/COP**
+    for the whole portfolio — a position never chosen and invisible in every price-based risk view
+    (INVERSOR_IDEAS §2.1/§4.2). The decomposition is exact (crypto valued at the average buy TRM,
+    FX as the rate move on the current position — the convention the review reports):
+
+        trm_avg    =  Σ cost_cop / Σ cost_usd                (implied average acquisition TRM)
+        crypto_cop = (Σ value_usd − Σ cost_usd) · trm_avg    (USD price move, at your buy rate)
+        fx_cop     =  Σ value_usd · (TRM_now − trm_avg)       (rate move on the current position)
+        total_cop  = crypto_cop + fx_cop = Σ value_cop − Σ cost_cop = pnl_cop   ✔ reconciles
+
+    Returns {has_data, crypto_cop, fx_cop, total_cop, pnl_usd, trm_now, trm_cost_avg}. ESTIMADO.
+    """
+    df = cop_usd_pnl_table(conn, settings, built=built)
+    trm_now = df.attrs.get("trm_now")
+    if df.empty or trm_now is None:
+        return {"has_data": False}
+    cost_usd = float(df["cost_usd"].sum())
+    value_usd = float(df["value_usd"].sum())
+    cost_cop = float(df["cost_cop"].sum())
+    if cost_usd <= 0:
+        return {"has_data": False}
+    trm_avg = cost_cop / cost_usd  # implied average acquisition TRM (Σ frozen cost / Σ USD cost)
+    crypto_cop = (value_usd - cost_usd) * trm_avg
+    fx_cop = value_usd * (trm_now - trm_avg)
+    return {
+        "has_data": True,
+        "crypto_cop": crypto_cop,
+        "fx_cop": fx_cop,
+        "total_cop": crypto_cop + fx_cop,
+        "pnl_usd": value_usd - cost_usd,
+        "trm_now": trm_now,
+        "trm_cost_avg": trm_avg,
+    }
+
+
 # Note: tax lots/disposals/consumption are computed on demand from `trades` (build_tax_lots)
 # and consumed in memory by the views — they are NOT persisted (the tables had no reader).
 

@@ -59,6 +59,7 @@ from transform.indicators import (  # noqa: E402
     liquidations_summary,
     macro_table,
     monthly_contribution_advice,
+    non_price_risk_table,
     portfolio_table,
     realized_pnl_fifo,
     regime_scoreboard,
@@ -79,6 +80,7 @@ from transform.fiscal import (  # noqa: E402
     exit_ladder_table,
     form160_check,
     maturity_summary,
+    pnl_attribution_cop,
     short_term_disposals,
     simulate_peps_sale,
     thesis_log_table,
@@ -1265,7 +1267,17 @@ def _real_account_view(conn, settings, holdings=None, built=None) -> None:
                 help="Días hasta que el próximo lote cumple 24 meses (venta pasa de tu marginal, "
                 "hasta 39%, al 15% de ganancia ocasional). `madurado ✓` = ya lo cumplió. ESTIMADO."
             )
-        cols["Nota"] = holdings["note"]
+        # Mark liquid-staking wrappers: a receipt for the base asset (BNSOL/WBETH), NOT the base
+        # asset — extra discount/contract/issuer risk (INVERSOR_IDEAS §2.5).
+        wrappers = set(settings.source("binance_account").get("staking_wrappers", []) or [])
+
+        def _note(asset: str, base_note: str) -> str:
+            if asset in wrappers:
+                mark = "🎁 envoltorio LSD (recibo, no el activo base)"
+                return mark if not base_note else f"{mark} · {base_note}"
+            return base_note
+
+        cols["Nota"] = [_note(a, n) for a, n in zip(holdings["asset"], holdings["note"])]
         show = pd.DataFrame(cols)
         st.dataframe(show, hide_index=True, width="stretch", column_config=column_config)
         wallets = ", ".join(settings.source("binance_account").get("wallets", ["spot"]))
@@ -1439,6 +1451,33 @@ def _risk_view(conn, settings, holdings) -> None:
             "Beta BTC": st.column_config.TextColumn(help="Beta del activo frente a BTC."),
         },
     )
+
+    # Peso en capital vs. contribución al riesgo (§6#4): una posición pequeña puede ser gran
+    # parte del riesgo (aquí, BTC = 28% del capital pero ~74% de la pérdida).
+    wr = _weight_vs_risk_chart(summary["per_asset"])
+    if wr is not None:
+        st.altair_chart(wr, width="stretch")
+        st.caption(
+            "Barras pareadas: **peso en capital vs. contribución al riesgo**. Cuando la roja supera "
+            "a la gris, esa posición pesa más en el riesgo que en el capital (INVERSOR_IDEAS §6#4)."
+        )
+
+    # Materialidad (§2.6): si la tesis acierta, ¿cuánto mueve la cartera? (un 3x = +2×peso).
+    if holdings is not None and not holdings.empty:
+        sens = []
+        for r in holdings.to_dict("records"):
+            w = r.get("weight_pct")
+            if r["is_cash"] or w is None or pd.isna(w):
+                continue
+            sens.append({"Activo": r["asset"], "Peso": f"{w:.1f}%", "Si 3x → cartera": f"+{2 * w:.1f} pp"})
+        if sens:
+            sens.sort(key=lambda x: float(x["Peso"][:-1]))
+            st.caption(
+                "**Materialidad — si la tesis acierta, ¿cuánto mueve la aguja?** Un 3x (=+200% en la "
+                "posición) suma +2×peso a la cartera. Por debajo de cierto tamaño, una posición es "
+                "coste cognitivo con opcionalidad decorativa (INVERSOR_IDEAS §2.6)."
+            )
+            st.dataframe(pd.DataFrame(sens), hide_index=True, width="stretch")
 
     ch = _corr_heatmap(correlation_matrix(conn, settings, holdings))
     if ch is not None:
@@ -2512,6 +2551,16 @@ def _attention_items(conn, settings, holdings, built) -> list[dict]:
                             "tributa al 15% en vez de tu marginal.",
                 })
 
+    # --- Riesgo no-precio sobre umbral (solo si hay política escrita) — §4.1 ------------------
+    npr = non_price_risk_table(conn, settings, holdings)
+    for r in ([] if npr.empty else npr.to_dict("records")):
+        if r["status"] == "rojo":
+            items.append({
+                "sev": 2,
+                "text": f"Riesgo no-precio sobre umbral: **{r['dimension']}** {r['current_pct']:.0f}% "
+                        f"(límite {r['limit_pct']:.0f}%).",
+            })
+
     items.sort(key=lambda it: (-it["sev"], it["text"]))
     return items
 
@@ -2546,6 +2595,130 @@ def _asset_drift_chart(df: pd.DataFrame, band: float):
     ).encode(x="v:Q")
     zero = alt.Chart(alt.Data(values=[{"v": 0}])).mark_rule(color="#6b7280").encode(x="v:Q")
     return (bars + band_rule + zero).properties(height=min(60 + 24 * len(rows), 420))
+
+
+# Non-price risk status -> display label (INVERSOR_IDEAS §4.1).
+_NPR_STATUS_LABEL = {
+    "rojo": "🔴 sobre umbral", "ambar": "🟠 cerca", "verde": "🟢 ok", "sin_politica": "· sin política",
+}
+
+
+def _risk_headline(conn, settings, holdings) -> None:
+    """One-line basket risk on the portada, with the simulated drawdown up front (§4.3/§7.2/§8#3).
+
+    The drawdown is the number that predicts whether you hold through the fall or capitulate — it
+    should look you in the face weekly, not live on an inner page. Not a prediction; how much it
+    would have hurt on the available history with today's holdings.
+    """
+    rs = portfolio_risk_summary(conn, settings, holdings)
+    if not rs.get("has_data"):
+        return
+    dd, vol, beta, neff = (
+        rs.get("max_drawdown_pct"), rs.get("port_vol_annual_pct"),
+        rs.get("port_beta_btc"), rs.get("effective_n"),
+    )
+    parts = []
+    if dd is not None:
+        parts.append(f":red[Drawdown máx. simulado **{dd:.0f}%**]")
+    if vol is not None:
+        parts.append(f"Vol {vol:.0f}%")
+    if beta is not None:
+        parts.append(f"β BTC {beta:.2f}")
+    if neff is not None:
+        parts.append(f"N efectivo {neff:.1f} (de {rs.get('n_assets', '?')})")
+    st.markdown("**Riesgo de la cesta actual:** " + " · ".join(parts))
+    st.caption(
+        "El drawdown es lo que tu cesta actual habría sufrido en el peor tramo del histórico "
+        "disponible — la cifra que predice si aguantas la caída o capitulas a mitad "
+        "(INVERSOR_IDEAS §4.3). No es predicción; es cuánto habría dolido."
+    )
+
+
+def _pnl_fx_chart(att: dict):
+    """Two horizontal bars: the COP PnL split into crypto (price) and FX (TRM). INVERSOR_IDEAS §2.1."""
+    rows = [
+        {"comp": "Cripto (precio USD)", "cop": round(att["crypto_cop"])},
+        {"comp": "FX (TRM)", "cop": round(att["fx_cop"])},
+    ]
+    order = ["Cripto (precio USD)", "FX (TRM)"]
+    return alt.Chart(alt.Data(values=rows)).mark_bar().encode(
+        x=alt.X("cop:Q", title="COP"),
+        y=alt.Y("comp:N", title=None, sort=order),
+        color=alt.Color("comp:N", scale=alt.Scale(domain=order, range=["#6366f1", "#ef4444"]),
+                        legend=None),
+        tooltip=[alt.Tooltip("comp:N", title="Componente"),
+                 alt.Tooltip("cop:Q", title="COP", format=",.0f")],
+    ).properties(height=90)
+
+
+def _pnl_fx_block(conn, settings, built) -> None:
+    """Attribute the COP PnL to crypto vs. the exchange rate (INVERSOR_IDEAS §2.1/§4.2/§8#1).
+
+    "−$168 / −949.962 COP" reads as "I'm down"; it does not read as "a third of my loss is the
+    TRM." Holding 100% in USD-denominated assets while spending pesos is a portfolio-sized long
+    USD/COP no one chose — this makes it visible without adding a source.
+    """
+    att = pnl_attribution_cop(conn, settings, built=built)
+    if not att.get("has_data"):
+        return
+    st.subheader("PnL en pesos: cripto vs. tasa de cambio")
+    st.altair_chart(_pnl_fx_chart(att), width="stretch")
+    fx_usd = (att["fx_cop"] / att["trm_now"]) if att.get("trm_now") else None
+    st.caption(
+        f"PnL COP {_fmt_cop(att['total_cop'])} = cripto {_fmt_cop(att['crypto_cop'])} + "
+        f"FX {_fmt_cop(att['fx_cop'])}. Compraste a una TRM media de {att['trm_cost_avg']:,.0f} y "
+        f"hoy está en {att['trm_now']:,.0f}: mantener el 100% en activos en USD mientras gastas en "
+        "pesos es una posición larga USD/COP del tamaño de la cartera que nunca decidiste tomar"
+        + (f" (~{_fmt_signed_usd(fx_usd)} solo por FX)." if fx_usd is not None else ".")
+        + " ESTIMADO (INVERSOR_IDEAS §2.1)."
+    )
+
+
+def _non_price_risk_block(conn, settings, holdings) -> None:
+    """Counterparty/custody/issuer concentration table (INVERSOR_IDEAS §4.1/§8#2)."""
+    df = non_price_risk_table(conn, settings, holdings)
+    if df.empty:
+        return
+    st.subheader("Riesgos que no son de precio")
+    show = pd.DataFrame({
+        "Dimensión": df["dimension"],
+        "Actual": df["current_pct"].map(lambda x: f"{x:.1f}%"),
+        "Límite": df["limit_pct"].map(lambda x: "—" if x is None or pd.isna(x) else f"{x:.0f}%"),
+        "Estado": df["status"].map(lambda s: _NPR_STATUS_LABEL.get(s, s)),
+        "Qué es": df["detail"],
+    })
+    st.dataframe(
+        show, hide_index=True, width="stretch",
+        column_config={"Qué es": st.column_config.TextColumn(width="large")},
+    )
+    st.caption(
+        "Contrapartida, emisor y custodia — los riesgos que arruinan carteras cripto y que el "
+        "heatmap de correlación no ve porque mide precios. El semáforo aparece donde fijes un "
+        "umbral en `portfolio.non_price_risk_limits`; el valor está en **escribir la política "
+        "antes** de que el riesgo se materialice (INVERSOR_IDEAS §4.1)."
+    )
+
+
+def _weight_vs_risk_chart(per_asset: list[dict]):
+    """Paired bars: each asset's share of capital vs. its share of risk (INVERSOR_IDEAS §6#4)."""
+    if not per_asset:
+        return None
+    rows = []
+    for p in per_asset:
+        rows.append({"asset": p["symbol"], "tipo": "Peso capital", "pct": round(p["weight_pct"], 1)})
+        rows.append({"asset": p["symbol"], "tipo": "Contrib. riesgo",
+                     "pct": round(p["risk_contribution_pct"], 1)})
+    order = [p["symbol"] for p in per_asset]
+    return alt.Chart(alt.Data(values=rows)).mark_bar().encode(
+        x=alt.X("pct:Q", title="%"),
+        y=alt.Y("asset:N", title=None, sort=order),
+        yOffset=alt.YOffset("tipo:N"),
+        color=alt.Color("tipo:N", scale=alt.Scale(
+            domain=["Peso capital", "Contrib. riesgo"], range=["#94a3b8", "#ef4444"]),
+            legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=[alt.Tooltip("asset:N", title="Activo"), alt.Tooltip("tipo:N", title=None),
+                 alt.Tooltip("pct:Q", title="%")],
+    ).properties(height=min(60 + 30 * len(per_asset), 460))
 
 
 def _section_today(conn, settings, holdings, built) -> None:
@@ -2596,7 +2769,15 @@ def _section_today(conn, settings, holdings, built) -> None:
         help="Mismo PnL en pesos (coste congelado a la TRM de compra, Art. 269). Puede diferir de "
         "signo con el USD si el peso se movió (INVERSOR_IDEAS §4.3). ESTIMADO.",
     )
-    m4.metric("Caja", f"{cash_pct:.1f}%", help=f"Stablecoins como % del valor total ({_fmt_usd(cash)}).")
+    m4.metric(
+        "Caja", f"{cash_pct:.1f}%",
+        help=f"Stablecoins como % del valor total ({_fmt_usd(cash)}). **Ojo:** una stablecoin no es "
+        "efectivo sin riesgo — es un crédito contra su emisor. Concentración por emisor abajo "
+        "(INVERSOR_IDEAS §2.2).",
+    )
+
+    # Basket risk on the portada, drawdown first (§4.3/§8#3).
+    _risk_headline(conn, settings, holdings)
 
     # Deployment progress: cash toward its target (§6#7). Rebalance by adding, not by timing.
     target_cash = float(settings.raw.get("portfolio", {}).get("target_weights_asset", {}).get("CASH", 5))
@@ -2623,6 +2804,12 @@ def _section_today(conn, settings, holdings, built) -> None:
             "Consolidado de fiscal, drift, tesis y eventos — todo ya se calculaba, disperso en 6 "
             "secciones. No es *timing*: son avisos de disciplina y de rebalanceo (sección 2)."
         )
+
+    # Non-price risk (§8#2) + PnL crypto-vs-FX attribution (§8#1): the two portada gaps the review
+    # flagged. Both are composition of existing data; neither is a timing/price signal.
+    _non_price_risk_block(conn, settings, holdings)
+    if built is not None:
+        _pnl_fx_block(conn, settings, built)
 
     # Per-asset drift (§6#2): ¿a qué le echo el aporte?
     da = drift_vs_target_asset(conn, settings, holdings)

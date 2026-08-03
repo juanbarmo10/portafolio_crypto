@@ -576,6 +576,14 @@ def _val(observation: tuple[str, float] | None) -> float | None:
 # Stablecoins treated as $1 for valuation.
 STABLECOINS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
 
+# Stablecoin -> issuer, for counterparty-concentration reporting (INVERSOR_IDEAS §2.2/§4.1):
+# a stablecoin is an unsecured claim on its issuer, so "cash" concentrated in one issuer is
+# concentrated counterparty risk. Unknown stablecoins fall back to their own symbol.
+STABLECOIN_ISSUER = {
+    "USDT": "Tether", "USDC": "Circle", "BUSD": "Binance",
+    "FDUSD": "First Digital", "DAI": "MakerDAO", "TUSD": "TrueUSD",
+}
+
 
 def _usd_price(
     conn: sqlite3.Connection,
@@ -701,6 +709,113 @@ def holdings_table(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame
     df.attrs["total_value_usd"] = float(total) if total else 0.0
     df.attrs["cash_usd"] = float(df.loc[df["is_cash"], "value_usd"].sum(skipna=True))
     df.attrs["invested_value_usd"] = float(non_cash_total) if non_cash_total else 0.0
+    return df
+
+
+def non_price_risk_table(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Counterparty / custody / issuer concentrations the market-risk view can't see (§4.1).
+
+    The panel measures market risk (vol, beta, corr, HHI) with rigor and ignores the risks that
+    actually wipe out crypto portfolios: single-exchange custody, stablecoin-issuer concentration,
+    lent balances (Earn = a credit position, not custody) and liquid-staking wrappers. All as % of
+    total value. The **semáforo appears only where a limit is set** in
+    ``portfolio.non_price_risk_limits`` — the value is writing the policy, not the number (same
+    philosophy the panel applies to theses). Self-custody counts manual holdings flagged
+    ``self_custody: true``.
+
+    Columns [dimension, key, current_pct, limit_pct, status, detail]; attr ``total_usd``.
+    ``status`` ∈ {rojo, ambar, verde, sin_politica}. ``key`` is a stable id for styling/tests.
+    """
+    cfg = settings.source("binance_account")
+    id_by_symbol = {a["symbol"]: a["coingecko_id"] for a in settings.assets}
+    price_aliases = cfg.get("price_aliases", {}) or {}
+    asset_aliases = cfg.get("asset_aliases", {}) or {}
+    priceable = set(id_by_symbol) | STABLECOINS
+    wrappers = set(cfg.get("staking_wrappers", []) or [])
+    limits = settings.raw.get("portfolio", {}).get("non_price_risk_limits", {}) or {}
+
+    # Value the current on-exchange snapshot per (raw asset, wallet); keep the raw code so
+    # wrappers (BNSOL/WBETH) and Earn wallets stay visible before alias-normalization.
+    exch_total = earn_total = wrapper_total = 0.0
+    issuer_usd: dict[str, float] = {}
+    for series_id, amount in current_balances(conn, "binance").items():
+        parts = series_id.split(":")  # ASSET:balance:WALLET
+        raw_asset, wallet = parts[0], parts[-1]
+        underlying = normalize_asset(raw_asset, asset_aliases, priceable)
+        # Wrappers (BNSOL/WBETH) price at their OWN rate; everything else (incl. Earn LDBTC) at
+        # the underlying.
+        price = (
+            _usd_price(conn, raw_asset, id_by_symbol, price_aliases)
+            if raw_asset in price_aliases
+            else _usd_price(conn, underlying, id_by_symbol, price_aliases)
+        )
+        if price is None:
+            continue
+        val = amount * price
+        exch_total += val
+        if wallet == "earn":
+            earn_total += val
+        if raw_asset in wrappers:
+            wrapper_total += val
+        if underlying in STABLECOINS:
+            issuer_usd[STABLECOIN_ISSUER.get(underlying, underlying)] = (
+                issuer_usd.get(STABLECOIN_ISSUER.get(underlying, underlying), 0.0) + val
+            )
+
+    # Manual holdings (off-exchange capital the key can't read); self-custody if flagged.
+    self_custody = manual_total = 0.0
+    for entry in cfg.get("manual_holdings", []) or []:
+        if entry.get("value_usd") is not None:
+            val = float(entry["value_usd"])
+        else:
+            asset, amt = entry.get("asset"), entry.get("amount")
+            price = _usd_price(conn, asset, id_by_symbol, price_aliases) if asset else None
+            val = float(amt) * price if (amt is not None and price is not None) else 0.0
+        manual_total += val
+        if entry.get("self_custody"):
+            self_custody += val
+
+    total = exch_total + manual_total
+    top_issuer, top_issuer_usd = (
+        max(issuer_usd.items(), key=lambda kv: kv[1]) if issuer_usd else (None, 0.0)
+    )
+
+    def _pct(x: float) -> float:
+        return (x / total * 100.0) if total else 0.0
+
+    specs = [
+        ("Exchange único (Binance)", "exchange", _pct(exch_total),
+         limits.get("exchange_max_pct"), "max",
+         "Custodia en un solo exchange; un fallo se lleva el 100%, correlación 1,0."),
+        ("Emisor de stablecoin", "stablecoin_issuer", _pct(top_issuer_usd),
+         limits.get("stablecoin_issuer_max_pct"), "max",
+         f"Mayor emisor: {top_issuer or '—'} — crédito no garantizado contra el emisor."),
+        ("Prestado (Earn, no custodiado)", "lent", _pct(earn_total),
+         limits.get("lent_max_pct"), "max",
+         "Saldos en Earn = prestados al exchange; posición de crédito, no custodia."),
+        ("Envoltorios de staking (LSD)", "wrappers", _pct(wrapper_total),
+         limits.get("wrappers_max_pct"), "max",
+         "Recibo del activo (BNSOL/WBETH): descuento, contrato/validador y emisor."),
+        ("Autocustodia", "self_custody", _pct(self_custody),
+         limits.get("self_custody_min_pct"), "min",
+         "Capital con llaves propias, fuera del riesgo de exchange."),
+    ]
+    rows = []
+    for dim, key, cur, lim, direction, detail in specs:
+        if lim is None:
+            status = "sin_politica"
+        elif direction == "max":
+            status = "rojo" if cur > lim else ("ambar" if cur > 0.8 * lim else "verde")
+        else:  # min: want AT LEAST lim
+            status = "rojo" if cur < lim else ("ambar" if cur < 1.25 * lim else "verde")
+        rows.append({
+            "dimension": dim, "key": key, "current_pct": cur,
+            "limit_pct": (None if lim is None else float(lim)), "status": status, "detail": detail,
+        })
+    df = pd.DataFrame(rows, columns=["dimension", "key", "current_pct", "limit_pct", "status", "detail"])
+    df.attrs["total_usd"] = float(total)
     return df
 
 

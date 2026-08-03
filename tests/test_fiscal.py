@@ -28,6 +28,7 @@ from transform.fiscal import (
     form160_check,
     maturity_summary,
     persist_thesis_and_ladder,
+    pnl_attribution_cop,
     short_term_disposals,
     simulate_peps_sale,
     thesis_log_table,
@@ -119,6 +120,24 @@ def test_peps_regime_split_by_maturity(conn, settings) -> None:
     cons = {c["lot_id"]: c for c in build_tax_lots(conn, settings)["consumption"]}
     assert cons["old"]["regime"] == "ganancia_ocasional"   # held >= 24 months
     assert cons["new"]["regime"] == "renta_ordinaria"       # held < 24 months
+
+
+def test_pnl_attribution_reconciles(conn, settings) -> None:
+    # Peso devalued (TRM 4000->4800) while BTC fell 100->90 USD: crypto loss + FX gain = pnl_cop.
+    upsert_observations(conn, pd.DataFrame([
+        _trm("2025-01-01T00:00:00+00:00", 4000.0),
+        _trm("2026-01-01T00:00:00+00:00", 4800.0),
+        _price("bitcoin", "2026-01-01T00:00:00+00:00", 90000.0),
+    ]))
+    upsert_trades(conn, pd.DataFrame([
+        _trade("b1", "buy", "2025-01-01T00:00:00+00:00", 0.001, 100000.0, 100.0),
+    ]))
+    att = pnl_attribution_cop(conn, settings)
+    assert att["has_data"]
+    assert att["trm_cost_avg"] == pytest.approx(4000.0)
+    assert att["crypto_cop"] == pytest.approx(-40_000.0)  # (90-100)*4000 (price move at buy TRM)
+    assert att["fx_cop"] == pytest.approx(72_000.0)       # 90*(4800-4000) (rate move on position)
+    assert att["total_cop"] == pytest.approx(32_000.0)    # reconciles to value_cop - cost_cop
 
 
 def test_cop_usd_divergence(conn, settings) -> None:

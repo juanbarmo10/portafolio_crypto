@@ -94,6 +94,10 @@ sources:
       # BNSOL counts as SOL for tramo/drift/riesgo (the second line INVERSOR_IDEAS §2.2 requires:
       # own price above, but grouped as SOL so it doesn't fall in "Sin tramo" and skew drift).
       BNSOL: SOL
+    # Liquid-staking wrappers (a receipt for the base asset, not the base asset): flagged in the
+    # positions table and counted in the non-price-risk table (INVERSOR_IDEAS §2.5/§4.1). Extra
+    # risks vs. the underlying: discount to NAV, contract/validator risk, issuer dependence.
+    staking_wrappers: ["BNSOL", "WBETH"]
     # `manual_holdings` (real positions the read-only key can't see) is PERSONAL data and
     # must NOT live in this tracked/public file. Put it in the gitignored
     # `config/settings.local.yaml` (template: `config/settings.local.yaml.example`), which
@@ -406,6 +410,16 @@ portfolio:
     TAO: 5.0
     CASH: 5.0
   tilt_cap_pct: 25   # tope duro del tilt de cheapness (capa 4, G5-c) — desactivado hasta validar
+  # Límites de riesgo NO-precio (INVERSOR_IDEAS §4.1): contrapartida/custodia/emisor. La tabla
+  # muestra siempre el % actual; el SEMÁFORO solo aparece donde fijes un umbral. El valor está en
+  # escribir la política ANTES de que el riesgo se materialice (igual que las tesis). Todos
+  # opcionales; descoméntalos y ajústalos a tu tolerancia. `*_max_pct` = techo; `*_min_pct` = piso.
+  non_price_risk_limits:
+    # exchange_max_pct: 100          # % máx. en un solo exchange (custodia)
+    # stablecoin_issuer_max_pct: 30  # % máx. en el mayor emisor de stablecoin (Tether/Circle)
+    # lent_max_pct: 20               # % máx. prestado (Earn — no custodiado)
+    # wrappers_max_pct: 15           # % máx. en envoltorios de staking (LSD)
+    # self_custody_min_pct: 20       # % mín. en autocustodia (llaves propias)
 
 # --- Alerts (CLAUDE.md section 8, phase 3) -----------------------------------
 # Declarative rules evaluated against the DB after ingest; only actionable, pre-written

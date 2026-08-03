@@ -24,6 +24,7 @@ from transform.indicators import (
     holdings_by_group,
     holdings_table,
     macro_table,
+    non_price_risk_table,
     portfolio_table,
     source_discrepancy_table,
     thesis_invalidation_table,
@@ -235,6 +236,34 @@ def test_holdings_table_drops_exited_asset(conn, settings) -> None:
     table = holdings_table(conn, settings)
     assert set(table["asset"]) == {"BTC"}      # SOL dropped despite its stale 07-23 balance
     assert table.attrs["total_value_usd"] == pytest.approx(1300.0)
+
+
+def test_non_price_risk_table_concentrations(conn, settings) -> None:
+    # BTC 1300 spot + USDT 500 spot (Tether) + USDC 200 earn (Circle, lent) + WBETH 100 (wrapper).
+    upsert_observations(
+        conn,
+        pd.DataFrame(
+            [
+                _obs("bitcoin:price", "2026-07-24T00:00:00+00:00", 65000.0),
+                _obs("wrapped-beacon-eth:price", "2026-07-24T00:00:00+00:00", 2000.0),
+                _obs("BTC:balance:spot", "2026-07-24T00:00:00+00:00", 0.02, source="binance"),
+                _obs("USDT:balance:spot", "2026-07-24T00:00:00+00:00", 500.0, source="binance"),
+                _obs("USDC:balance:earn", "2026-07-24T00:00:00+00:00", 200.0, source="binance"),
+                _obs("WBETH:balance:spot", "2026-07-24T00:00:00+00:00", 0.05, source="binance"),
+            ]
+        ),
+    )
+    df = non_price_risk_table(conn, settings)
+    by = {r["key"]: r for r in df.to_dict("records")}
+    assert df.attrs["total_usd"] == pytest.approx(2100.0)
+    assert by["exchange"]["current_pct"] == pytest.approx(100.0)          # all on one exchange
+    assert by["stablecoin_issuer"]["current_pct"] == pytest.approx(500 / 2100 * 100)  # Tether top
+    assert "Tether" in by["stablecoin_issuer"]["detail"]
+    assert by["lent"]["current_pct"] == pytest.approx(200 / 2100 * 100)   # USDC in Earn
+    assert by["wrappers"]["current_pct"] == pytest.approx(100 / 2100 * 100)  # WBETH (LSD)
+    assert by["self_custody"]["current_pct"] == pytest.approx(0.0)
+    # No limits set in config -> the semáforo stays 'sin_politica' (the point is writing a policy).
+    assert {r["status"] for r in df.to_dict("records")} == {"sin_politica"}
 
 
 def test_holdings_table_weight_excluding_cash(conn, settings) -> None:

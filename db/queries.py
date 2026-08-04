@@ -107,6 +107,13 @@ def latest_by_source(conn: sqlite3.Connection, source: str) -> dict[str, float]:
     return {sid: float(val) for sid, val in rows if val is not None}
 
 
+def last_ingest_at(conn: sqlite3.Connection) -> str | None:
+    """Most recent ``ingested_at`` across all observations — when the last ``run_ingest`` wrote
+    data. The freshness stamp for a pull-not-push panel (§2). None if the DB has no observations."""
+    row = conn.execute("SELECT MAX(ingested_at) FROM observations").fetchone()
+    return row[0] if row and row[0] else None
+
+
 def current_balances(conn: sqlite3.Connection, source: str = "binance") -> dict[str, float]:
     """Return ``{series_id: value}`` for ``<asset>:balance:<wallet>`` series **as of the most
     recent balance-sync date only**.

@@ -15,7 +15,7 @@ import pytest
 
 from core.config import load_settings
 from db.loader import init_db, upsert_capital_flows, upsert_observations, upsert_trades
-from db.queries import series_release_history
+from db.queries import last_ingest_at, series_release_history
 from transform.indicators import (
     capital_deployed_summary,
     dca_status,
@@ -825,3 +825,12 @@ def test_series_release_history_indexes_by_release(conn) -> None:
     s = series_release_history(conn, "fred", "CPIAUCSL")
     assert s.index[0] == pd.Timestamp("2026-07-15T00:00:00+00:00")
     assert float(s.iloc[0]) == 300.0
+
+
+def test_last_ingest_at(conn) -> None:
+    assert last_ingest_at(conn) is None  # empty DB
+    upsert_observations(
+        conn, pd.DataFrame([_obs("bitcoin:price", "2026-07-24T00:00:00+00:00", 65000.0)])
+    )
+    got = last_ingest_at(conn)
+    assert got is not None and got.endswith("+00:00")  # ISO8601 UTC ingest stamp

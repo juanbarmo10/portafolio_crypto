@@ -37,7 +37,7 @@ import streamlit as st  # noqa: E402
 
 from core.config import load_settings  # noqa: E402
 from db.loader import init_db  # noqa: E402
-from db.queries import series_history, upcoming_events  # noqa: E402
+from db.queries import last_ingest_at, series_history, upcoming_events  # noqa: E402
 from transform.indicators import (  # noqa: E402
     behavioral_scorecard,
     btc_onchain_summary,
@@ -156,6 +156,24 @@ def _fmt_big_usd(x: float | None) -> str:
 def _fmt_date(iso: str | None) -> str:
     """Return just the ISO date (drop the time component), or an em dash."""
     return "—" if not iso or pd.isna(iso) else str(iso)[:10]
+
+
+def _fmt_updated(iso: str | None) -> str:
+    """Last-ingest timestamp (UTC) + a relative age ('hace 3 h'). Data-freshness stamp (§2)."""
+    if not iso:
+        return "sin datos ingestados todavía — corre `python run_ingest.py`"
+    try:
+        ts = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return str(iso)
+    secs = max((datetime.now(timezone.utc) - ts).total_seconds(), 0)
+    if secs < 3600:
+        age = f"hace {int(secs // 60)} min"
+    elif secs < 86400:
+        age = f"hace {int(secs // 3600)} h"
+    else:
+        age = f"hace {int(secs // 86400)} d"
+    return f"{ts.strftime('%Y-%m-%d %H:%M UTC')} · {age}"
 
 
 def _fmt_num(x: float | None) -> str:
@@ -2913,6 +2931,8 @@ def _section_today(conn, settings, holdings, built) -> None:
     design. No *timing*/price signal lives here (INVERSOR_IDEAS §3.1).
     """
     st.header("Hoy", anchor="hoy")
+    # Data-freshness stamp: the panel is pull, not push (§2) — this says how old the data is.
+    st.caption(f":material/update: Datos actualizados: **{_fmt_updated(last_ingest_at(conn))}**")
     if holdings.empty:
         st.info(
             "Cuenta no conectada. Crea una API key **de solo lectura** en Binance y ejecuta "

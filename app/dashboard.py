@@ -1864,6 +1864,18 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
         "solo empiezan al conectar la cuenta. Diario, sin intradía (sección 11)."
     )
 
+    # Coste medio vs. precio actual (§4.4): ¿qué posiciones están bajo agua y cuánto, de un vistazo?
+    cp = _cost_vs_price_chart(df)
+    if cp is not None:
+        st.markdown("**Coste medio vs. precio actual**")
+        st.altair_chart(cp, width="stretch")
+        st.caption(
+            "Cada posición normalizada a su **coste medio = 100** (línea punteada); el punto de color "
+            "es el precio actual. **Verde** = por encima de tu coste (en ganancia), **rojo** = por "
+            "debajo (bajo agua). Compara magnitudes distintas (BTC vs. XRP) en un mismo eje "
+            "(INVERSOR_IDEAS §4.4)."
+        )
+
     # Cascada del resultado (§6#6): descompone el valor de hoy en sus fuentes.
     w = result_waterfall(conn, settings, holdings)
     if w.get("has_data"):
@@ -2835,6 +2847,43 @@ def _result_waterfall_chart(w: dict):
         tooltip=[alt.Tooltip("label:N", title=None), alt.Tooltip("delta:Q", title="USD", format="+,.2f")],
     ).properties(height=40 + 34 * len(rows))
     return bars
+
+
+def _cost_vs_price_chart(df: pd.DataFrame):
+    """Dumbbell: each position's current price vs. its average cost, normalized to cost = 100
+    (INVERSOR_IDEAS §4.4). Normalizing lets assets of very different price magnitudes (BTC vs XRP)
+    share one axis; the blue marker left of the dashed 100 line = under water. None if no costed
+    position. ``df`` is a ``wallet_pnl_table`` (needs avg_price, amount, value_usd)."""
+    rows = []
+    for r in df.to_dict("records"):
+        avg, amt, val = r.get("avg_price"), r.get("amount"), r.get("value_usd")
+        if avg is None or pd.isna(avg) or not amt or val is None or pd.isna(val) or avg <= 0:
+            continue
+        cur = val / amt
+        ratio = round(cur / avg * 100.0, 1)
+        rows.append({"asset": r["symbol"], "ratio": ratio, "lo": min(100.0, ratio),
+                     "hi": max(100.0, ratio), "avg": avg, "cur": cur, "hundred": 100.0,
+                     "up": ratio >= 100})
+    if not rows:
+        return None
+    order = [r["asset"] for r in sorted(rows, key=lambda x: x["ratio"])]
+    data = alt.Data(values=rows)
+    connector = alt.Chart(data).mark_rule(color="#cbd5e1", strokeWidth=3).encode(
+        y=alt.Y("asset:N", title=None, sort=order),
+        x=alt.X("lo:Q", title="Precio actual vs. coste medio (coste = 100)"), x2="hi:Q")
+    base = alt.Chart(alt.Data(values=[{"x": 100}])).mark_rule(
+        color="#6b7280", strokeDash=[4, 3]).encode(x="x:Q")
+    cost_pt = alt.Chart(data).mark_point(filled=True, size=70, color="#94a3b8").encode(
+        y=alt.Y("asset:N", sort=order), x="hundred:Q",
+        tooltip=[alt.Tooltip("asset:N", title="Activo"),
+                 alt.Tooltip("avg:Q", title="Coste medio USD", format=",.4f")])
+    price_pt = alt.Chart(data).mark_point(filled=True, size=95).encode(
+        y=alt.Y("asset:N", sort=order), x="ratio:Q",
+        color=alt.condition(alt.datum.up, alt.value("#16a34a"), alt.value("#ef4444")),
+        tooltip=[alt.Tooltip("asset:N", title="Activo"),
+                 alt.Tooltip("cur:Q", title="Precio actual USD", format=",.4f"),
+                 alt.Tooltip("ratio:Q", title="vs coste (=100)")])
+    return (connector + base + cost_pt + price_pt).properties(height=min(60 + 26 * len(rows), 460))
 
 
 def _drawdown_contribution_chart(d: dict):

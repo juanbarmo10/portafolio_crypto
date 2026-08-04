@@ -44,7 +44,6 @@ from transform.indicators import (  # noqa: E402
     capital_deployed_summary,
     coinbase_premium_summary,
     dca_allocator,
-    dca_status,
     dca_vs_baseline_table,
     drift_vs_target,
     drift_vs_target_asset,
@@ -772,54 +771,64 @@ def _section_market_structure(conn, settings) -> None:
             for r in ms.to_dict("records")
         ]
         show = pd.DataFrame(rows)
-        styler = (
-            show.style
+        column_config = {
+            "Logo": st.column_config.ImageColumn("", width="small"),
+            "Estado": st.column_config.TextColumn(
+                help="Precio↑ OI↑ = Convicción (dinero nuevo); Precio↑ OI↓ = Mecánico "
+                "(cierre de cortos, frágil); Precio↓ OI↑ = Distribución; Precio↓ OI↓ = "
+                "Capitulación. Medido en el perp (7 días)."
+            ),
+            "Funding z": st.column_config.TextColumn(
+                help="Z-score del funding sobre 90 días. |z|≥2 (rojo) = posicionamiento "
+                "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
+            ),
+            "Basis": st.column_config.TextColumn(
+                help="Prima perp−spot (%). Positiva y creciente = largos apalancados pagando "
+                "prima (frágil); negativa = pesimismo/backwardation. Instantánea (perp sin "
+                "vencimiento; el funding es el carry)."
+            ),
+            "L/S retail": st.column_config.TextColumn(
+                help="Ratio long/short de cuentas retail (Binance). >1 = mayoría en largos."
+            ),
+            "L/S top": st.column_config.TextColumn(
+                help="Ratio long/short de las cuentas TOP ('smart money'). La divergencia "
+                "retail>>top (retail muy largo, top plano/corto) suele marcar techo local."
+            ),
+            "Taker": st.column_config.TextColumn(
+                help="Ratio de volumen agresor comprador/vendedor. >1 = presión compradora; "
+                "extremos = agotamiento del flujo."
+            ),
+            "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
+            "OI 30d": st.column_config.TextColumn(
+                help="Variación del interés abierto (USD) a 30 días (~límite del historial de OI)."
+            ),
+        }
+        # Default: 4 decision columns (estado, funding z, precio 7d, OI 7d); the rest (basis,
+        # L/S retail/top, taker, OI 30d) live in an expander — INVERSOR_IDEAS §5 (11 -> 4).
+        compact_cols = ["Logo", "Activo", "Estado", "Funding z", "Precio 7d", "OI 7d"]
+        compact = (
+            show[compact_cols].style
             .map(_color_rally, subset=["Estado"])
             .map(_color_funding_z, subset=["Funding z"])
-            .map(_color_by_sign, subset=["Basis", "Precio 7d", "OI 7d", "OI 30d"])
+            .map(_color_by_sign, subset=["Precio 7d", "OI 7d"])
         )
-        st.dataframe(
-            styler,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Logo": st.column_config.ImageColumn("", width="small"),
-                "Estado": st.column_config.TextColumn(
-                    help="Precio↑ OI↑ = Convicción (dinero nuevo); Precio↑ OI↓ = Mecánico "
-                    "(cierre de cortos, frágil); Precio↓ OI↑ = Distribución; Precio↓ OI↓ = "
-                    "Capitulación. Medido en el perp (7 días)."
-                ),
-                "Funding z": st.column_config.TextColumn(
-                    help="Z-score del funding sobre 90 días. |z|≥2 (rojo) = posicionamiento "
-                    "hacinado: z>2 largos (riesgo de cascada), z<-2 cortos (short squeeze)."
-                ),
-                "Basis": st.column_config.TextColumn(
-                    help="Prima perp−spot (%). Positiva y creciente = largos apalancados pagando "
-                    "prima (frágil); negativa = pesimismo/backwardation. Instantánea (perp sin "
-                    "vencimiento; el funding es el carry)."
-                ),
-                "L/S retail": st.column_config.TextColumn(
-                    help="Ratio long/short de cuentas retail (Binance). >1 = mayoría en largos."
-                ),
-                "L/S top": st.column_config.TextColumn(
-                    help="Ratio long/short de las cuentas TOP ('smart money'). La divergencia "
-                    "retail>>top (retail muy largo, top plano/corto) suele marcar techo local."
-                ),
-                "Taker": st.column_config.TextColumn(
-                    help="Ratio de volumen agresor comprador/vendedor. >1 = presión compradora; "
-                    "extremos = agotamiento del flujo."
-                ),
-                "OI 7d": st.column_config.TextColumn(help="Variación del interés abierto (USD) a 7 días."),
-                "OI 30d": st.column_config.TextColumn(
-                    help="Variación del interés abierto (USD) a 30 días (~límite del historial de OI)."
-                ),
-            },
-        )
+        st.dataframe(compact, hide_index=True, width="stretch", column_config=column_config)
         st.caption(
             "Rally por divergencia precio/OI + funding z (sección 2 nivel 2, sección 8). "
-            "**Basis** = prima perp−spot (apalancamiento); **L/S retail vs. top** = "
-            "posicionamiento minorista vs. smart money; **Taker** = flujo agresor."
+            "4 columnas de decisión; el resto (basis, L/S, taker, OI 30d) en el desplegable."
         )
+        with st.expander("Estructura completa — basis, L/S retail/top, taker, OI 30d"):
+            full = (
+                show.style
+                .map(_color_rally, subset=["Estado"])
+                .map(_color_funding_z, subset=["Funding z"])
+                .map(_color_by_sign, subset=["Basis", "Precio 7d", "OI 7d", "OI 30d"])
+            )
+            st.dataframe(full, hide_index=True, width="stretch", column_config=column_config)
+            st.caption(
+                "**Basis** = prima perp−spot (apalancamiento); **L/S retail vs. top** = "
+                "posicionamiento minorista vs. smart money; **Taker** = flujo agresor."
+            )
     else:
         st.info("Sin datos de derivados. Ejecuta `python run_ingest.py` (extra `.[markets]`).")
 
@@ -1308,28 +1317,6 @@ def _real_account_view(conn, settings, holdings=None, built=None) -> None:
     # DCA plan are composed by the page functions in `main` (multipage layout).
 
 
-def _dca_plan_view(conn, settings) -> None:
-    """Manual DCA plan (`dca_plan`): deployed/planned/fees and the next scheduled tranche."""
-    st.subheader("Plan DCA")
-    status = dca_status(conn, settings)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Desplegado (plan)", _fmt_usd(status["deployed_usd"]))
-    c2.metric("Planificado", _fmt_usd(status["planned_usd"]))
-    c3.metric("Comisiones (plan)", _fmt_usd(status["fees_usd"]))
-
-    nxt = status["next_tranche"]
-    if nxt is None:
-        st.info(
-            "No hay tramos pendientes en `dca_plan`. El plan DCA se carga en esta tabla "
-            f"(aporte mensual mínimo: {_fmt_usd(status['monthly_min_usd'])})."
-        )
-    else:
-        st.write(
-            f"**Próximo tramo:** {nxt['asset']} ({nxt['tier']}) · "
-            f"{_fmt_usd(nxt['amount_usd'])} · objetivo {nxt['target_date']}"
-        )
-
-
 def _drift_view(conn, settings, holdings) -> None:
     """B4: allocation drift by tier vs. §5 targets + rebalance-by-contribution hint (level 4)."""
     df = drift_vs_target(conn, settings, holdings)
@@ -1700,6 +1687,9 @@ def _scorecard_view(conn, settings) -> None:
         "Compara **el mismo flujo de capital** (tus operaciones) en tus activos vs. todo en BTC. "
         "Mide el capital que operaste, no lo adquirido vía Earn/Convert (honesto)."
     )
+    # DCA-vs-baseline (¿tu *timing* batió a promediar a ciegas?) — el mismo trabajo conductual, así
+    # que va aquí, no en un bloque aparte (INVERSOR_IDEAS §5, fusión).
+    _dca_baseline_view(conn, settings)
 
 
 def _wallet_pnl_view(conn, settings, holdings) -> None:
@@ -1944,6 +1934,45 @@ def _battery_result(db_path_str: str, horizon: int) -> dict:
         conn.close()
 
 
+def _maturation_timeline_chart(built: dict):
+    """Gantt of open lots from acquisition to their 24-month maturity, with a 'today' rule.
+
+    Answers "¿qué puedo vender barato fiscalmente y cuándo?" (INVERSOR_IDEAS §6#7): each open lot
+    is a bar from its buy date to the date it crosses 24 months; left of that line a sale is taxed
+    at your marginal rate (up to 39%), right of it at the 15% ganancia-ocasional rate. None if
+    there are no open lots.
+    """
+    today = pd.Timestamp(datetime.now(timezone.utc))
+    rows = []
+    for lot in built["lots"]:
+        if lot["units_remaining"] <= 1e-9:
+            continue
+        matures = pd.Timestamp(lot["matures_at"])
+        rows.append({
+            "lot": f"{lot['asset']} · {str(lot['acquired_at'])[:10]}",
+            "asset": lot["asset"],
+            "start": str(lot["acquired_at"])[:10],
+            "end": str(lot["matures_at"])[:10],
+            "estado": "Madurado" if matures <= today else "Pendiente",
+        })
+    if not rows:
+        return None
+    order = sorted({r["lot"] for r in rows})
+    bars = alt.Chart(alt.Data(values=rows)).mark_bar(height=10, cornerRadius=2).encode(
+        x=alt.X("start:T", title=None),
+        x2="end:T",
+        y=alt.Y("lot:N", title=None, sort=order),
+        color=alt.Color("estado:N", scale=alt.Scale(
+            domain=["Madurado", "Pendiente"], range=["#16a34a", "#f59e0b"]),
+            legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=[alt.Tooltip("asset:N", title="Activo"), alt.Tooltip("start:T", title="Compra"),
+                 alt.Tooltip("end:T", title="Cumple 24m"), alt.Tooltip("estado:N", title="Estado")],
+    )
+    rule = alt.Chart(alt.Data(values=[{"today": today.strftime("%Y-%m-%d")}])).mark_rule(
+        color="#ef4444", strokeDash=[4, 3]).encode(x="today:T")
+    return (bars + rule).properties(height=min(60 + 22 * len(rows), 460))
+
+
 def _section_fiscal(conn, settings, built=None) -> None:
     """Section 6 — Colombian tax layer (RESEARCH.md §17). LOCAL only, hidden under PUBLIC_MODE.
 
@@ -2092,6 +2121,15 @@ def _section_fiscal(conn, settings, built=None) -> None:
                 ),
             },
         )
+        # Per-lot maturation timeline (INVERSOR_IDEAS §6#7): when each lot crosses 24 months.
+        tl = _maturation_timeline_chart(built)
+        if tl is not None:
+            st.altair_chart(tl, width="stretch")
+            st.caption(
+                "Cada barra es un lote abierto, de la compra a los 24 meses; la línea roja es hoy. "
+                "A la izquierda de su fin aún tributa a tu marginal (hasta 39%); al cruzar los 24 m, "
+                "15% de ganancia ocasional (INVERSOR_IDEAS §6#7). ESTIMADO."
+            )
 
     # Pre-sale PEPS simulator — the most valuable piece: see the tax consequence BEFORE selling.
     if lots:
@@ -2859,7 +2897,8 @@ def main() -> None:
     """Entry point for `streamlit run app/dashboard.py` — multipage via ``st.navigation``.
 
     Pages (local): **Hoy** (weekly landing), **Desplegar capital** (checklist 1→4 + lista de
-    compra), **Análisis** (radar, cartera, PnL, riesgo, value accrual, scorecard), **Fiscal**,
+    compra), **Cartera** (real account, PnL, risk, scorecard — mi cartera en detalle), **Mercado**
+    (radar, value accrual, on-chain — el mercado en detalle, INVERSOR_IDEAS §7.1), **Fiscal**,
     **Método** (validación). Public deploy exposes only **Mercado** + **Método** (no real
     account). The §2 hierarchy holds: the *deploy* decision walks 1→4 in order on its own page.
     """
@@ -2901,18 +2940,18 @@ def main() -> None:
             _drift_view(conn, settings, holdings)
             _contribution_advice_view(conn, settings, holdings)
             _dca_shopping_list_view(conn, settings, holdings)
-            _dca_plan_view(conn, settings)
 
-        def page_analisis() -> None:
-            _section_portfolio(conn, settings)
-            st.divider()
+        def page_cartera() -> None:  # "mi cartera en detalle" (INVERSOR_IDEAS §7.1)
             _real_account_view(conn, settings, holdings, built)
             _wallet_pnl_view(conn, settings, holdings)
             _risk_view(conn, settings, holdings)
+            _scorecard_view(conn, settings)  # incl. DCA-vs-baseline (merged, §5)
+
+        def page_mercado_detalle() -> None:  # "el mercado en detalle" (INVERSOR_IDEAS §7.1)
+            _section_portfolio(conn, settings)
+            st.divider()
             _value_accrual_view(conn, settings)
             _btc_onchain_block(conn, settings)
-            _scorecard_view(conn, settings)
-            _dca_baseline_view(conn, settings)
 
         def page_fiscal() -> None:
             _section_fiscal(conn, settings, built=built)
@@ -2937,8 +2976,10 @@ def main() -> None:
                 st.Page(page_hoy, title="Hoy", icon=":material/home:", url_path="hoy", default=True),
                 st.Page(page_deploy, title="Desplegar capital", icon=":material/checklist:",
                         url_path="desplegar"),
-                st.Page(page_analisis, title="Análisis", icon=":material/insights:",
-                        url_path="analisis"),
+                st.Page(page_cartera, title="Cartera", icon=":material/account_balance_wallet:",
+                        url_path="cartera"),
+                st.Page(page_mercado_detalle, title="Mercado", icon=":material/insights:",
+                        url_path="mercado"),
             ]
             if fiscal_on:
                 pages.append(st.Page(page_fiscal, title="Fiscal", icon=":material/receipt_long:",

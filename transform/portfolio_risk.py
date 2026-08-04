@@ -50,6 +50,62 @@ def _max_drawdown(value: pd.Series) -> float | None:
     return float(dd.min()) * 100.0
 
 
+def drawdown_contribution(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    holdings: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Attribute the portfolio's max simulated drawdown to each asset (INVERSOR_IDEAS §6).
+
+    The max drawdown (``portfolio_risk_summary``) is the worst peak→trough of the non-cash sleeve
+    valued at *current holdings × past prices*. Over that same peak→trough window, each asset's
+    dollar drop ``value_i(peak) − value_i(trough)`` sums **exactly** to the portfolio drop — so the
+    attribution reconciles by construction. Answers "in a fall, who sank you?" (e.g. BTC can be 28%
+    of the capital and the majority of the loss). Same "current holdings at past prices" caveat as
+    ``max_drawdown_pct``.
+
+    Returns {has_data, max_dd_pct, peak, trough, drop_usd, per_asset:[{symbol, loss_usd,
+    share_pct, contribution_pp}]} sorted biggest-sinker first. ``share_pct`` = % of the drop;
+    ``contribution_pp`` = drop as pp of the peak value (Σ = |max_dd_pct|).
+    """
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
+    matrix, _cash = _holdings_value_matrix(conn, settings, holdings)
+    if matrix.empty:
+        return {"has_data": False}
+    port = matrix.sum(axis=1, min_count=1).dropna()
+    if len(port) < 2:
+        return {"has_data": False}
+    dd = port / port.cummax() - 1.0
+    trough_i = dd.idxmin()
+    peak_i = port.loc[:trough_i].idxmax()
+    v_peak, v_trough = float(port.loc[peak_i]), float(port.loc[trough_i])
+    drop = v_peak - v_trough
+    if drop <= 0 or v_peak <= 0:
+        return {"has_data": False}
+
+    at_peak = matrix.loc[peak_i].fillna(0.0)
+    at_trough = matrix.loc[trough_i].fillna(0.0)
+    per_asset = []
+    for s in matrix.columns:
+        loss = float(at_peak[s]) - float(at_trough[s])  # >0 = it fell over the window
+        per_asset.append({
+            "symbol": s,
+            "loss_usd": loss,
+            "share_pct": loss / drop * 100.0,
+            "contribution_pp": loss / v_peak * 100.0,
+        })
+    per_asset.sort(key=lambda x: x["loss_usd"], reverse=True)
+    return {
+        "has_data": True,
+        "max_dd_pct": float(dd.min()) * 100.0,
+        "peak": str(peak_i)[:10],
+        "trough": str(trough_i)[:10],
+        "drop_usd": drop,
+        "per_asset": per_asset,
+    }
+
+
 def _returns_frame(
     conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame, days: int
 ) -> tuple[pd.DataFrame, dict[str, float], pd.Series]:

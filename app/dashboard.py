@@ -62,6 +62,7 @@ from transform.indicators import (  # noqa: E402
     portfolio_table,
     realized_pnl_fifo,
     regime_scoreboard,
+    result_waterfall,
     rotation_summary,
     source_discrepancy_table,
     stablecoins_summary,
@@ -85,7 +86,11 @@ from transform.fiscal import (  # noqa: E402
     thesis_log_table,
 )
 from validation.backtest import funding_zscore_backtest, signal_battery  # noqa: E402
-from transform.portfolio_risk import correlation_matrix, portfolio_risk_summary  # noqa: E402
+from transform.portfolio_risk import (  # noqa: E402
+    correlation_matrix,
+    drawdown_contribution,
+    portfolio_risk_summary,
+)
 from transform.rally_quality import (  # noqa: E402
     RALLY_CAPITULATION,
     RALLY_CONVICTION,
@@ -876,6 +881,21 @@ def _section_thesis(conn, settings, include_analysis: bool = True) -> None:
     if df.empty:
         st.info("Sin activos configurados en `settings.yaml`.")
         return
+    # TVL only makes sense for protocols/chains; the other assets (BTC, XRP, TAO, …) are not
+    # protocols and were padding the table with "—". Keep only the ones with tracked TVL; the
+    # rest live in the invalidation board below (INVERSOR_IDEAS §5).
+    n_all = len(df)
+    df = df[df["tvl"].notna()].reset_index(drop=True)
+    if df.empty:
+        st.caption(
+            "Ningún activo con TVL rastreado todavía (ejecuta `python run_ingest.py`). El estado de "
+            "tesis de todos los activos está en el tablero de invalidación, más abajo."
+        )
+        _thesis_invalidation_board(conn, settings)
+        if include_analysis:
+            _value_accrual_view(conn, settings)
+            _btc_onchain_block(conn, settings)
+        return
 
     cat_notes = settings.raw.get("thesis_categories", {})
     slug_by_symbol = {
@@ -936,9 +956,10 @@ def _section_thesis(conn, settings, include_analysis: bool = True) -> None:
         },
     )
     st.caption(
-        "Todos los activos, agrupados por *categoría de tesis* para exponer concentración "
-        "disfrazada de diversificación (sección 5). **Clic en una fila para ver el historial de TVL** "
-        "(activos sin TVL rastreado no muestran gráfico). Verde/rojo = variación de TVL."
+        f"Solo los **{len(df)} de {n_all}** activos con TVL rastreado (protocolos/cadenas), agrupados "
+        "por *categoría de tesis* (sección 5). Los otros (BTC, XRP, TAO, XLM, BNB, LINK…) no son "
+        "protocolos y viven en el tablero de invalidación, abajo. **Clic en una fila para ver el "
+        "historial de TVL.** Verde/rojo = variación de TVL."
     )
     sel = _selected_row(event)
     if sel is not None:
@@ -1449,6 +1470,21 @@ def _risk_view(conn, settings, holdings) -> None:
             "a la gris, esa posición pesa más en el riesgo que en el capital (INVERSOR_IDEAS §6#4)."
         )
 
+    # ¿Quién te hundió? — contribución de cada activo a la caída máxima simulada (§6).
+    dc = drawdown_contribution(conn, settings, holdings)
+    if dc.get("has_data"):
+        dcc = _drawdown_contribution_chart(dc)
+        if dcc is not None:
+            st.markdown(f"**¿Quién te hundió? — caída máx. {dc['max_dd_pct']:.0f}%**")
+            st.altair_chart(dcc, width="stretch")
+            top = dc["per_asset"][0]
+            st.caption(
+                f"En la peor caída simulada ({dc['peak']} → {dc['trough']}, −{_fmt_usd(dc['drop_usd'])}), "
+                f"**{top['symbol']}** explicó el **{top['share_pct']:.0f}%**. En una caída importa quién "
+                "te hundió, no solo la varianza: las contribuciones suman la caída total (INVERSOR_IDEAS §6). "
+                "Mismo supuesto que el drawdown (tenencias actuales a precios pasados)."
+            )
+
     # Materialidad (§2.6): si la tesis acierta, ¿cuánto mueve la cartera? (un 3x = +2×peso).
     if holdings is not None and not holdings.empty:
         sens = []
@@ -1827,6 +1863,21 @@ def _wallet_pnl_view(conn, settings, holdings) -> None:
         "*mantener*): **no** es el valor real que tuviste en el pasado — los snapshots de balance "
         "solo empiezan al conectar la cuenta. Diario, sin intradía (sección 11)."
     )
+
+    # Cascada del resultado (§6#6): descompone el valor de hoy en sus fuentes.
+    w = result_waterfall(conn, settings, holdings)
+    if w.get("has_data"):
+        st.markdown("**¿De dónde viene el valor de hoy?**")
+        st.altair_chart(_result_waterfall_chart(w), width="stretch")
+        res = w["residual"]
+        res_share = abs(res) / w["net_deployed"] * 100.0 if w["net_deployed"] else 0.0
+        st.caption(
+            f"Aportado neto → realizado → no realizado → comisiones → **ajuste ({_fmt_signed_usd(res)})** "
+            f"→ valor hoy. El *ajuste* recoge lo no atribuible con precisión: recompensas de Earn/staking, "
+            "posiciones sin base de coste (Earn/Convert) y el desfase de la captura de depósitos"
+            + (f" (~{res_share:.0f}% del aportado" if res_share else "")
+            + "; un ajuste grande = fija `binance_account.net_deployed_usd` en el override local)."
+        )
 
 
 def _dca_baseline_view(conn, settings) -> None:
@@ -2759,6 +2810,51 @@ def _weight_vs_risk_chart(per_asset: list[dict]):
     ).properties(height=min(60 + 30 * len(per_asset), 460))
 
 
+def _result_waterfall_chart(w: dict):
+    """Horizontal waterfall: aportado → realizado → no realizado → comisiones → ajuste → valor
+    (INVERSOR_IDEAS §6#6). Bars reconcile to the live total by construction."""
+    rows = []
+    run = 0.0
+    for stp in w["steps"]:
+        start, run = run, run + stp["delta"]
+        rows.append({
+            "label": stp["label"], "lo": min(start, run), "hi": max(start, run),
+            "delta": round(stp["delta"], 2),
+            "color": "base" if stp["kind"] == "base" else ("pos" if stp["delta"] >= 0 else "neg"),
+        })
+    rows.append({"label": "Valor hoy", "lo": 0.0, "hi": round(w["total_value"], 2),
+                 "delta": round(w["total_value"], 2), "color": "total"})
+    order = [r["label"] for r in rows]
+    bars = alt.Chart(alt.Data(values=rows)).mark_bar().encode(
+        y=alt.Y("label:N", title=None, sort=order),
+        x=alt.X("lo:Q", title="USD"),
+        x2="hi:Q",
+        color=alt.Color("color:N", scale=alt.Scale(
+            domain=["base", "pos", "neg", "total"],
+            range=["#94a3b8", "#16a34a", "#ef4444", "#0ea5e9"]), legend=None),
+        tooltip=[alt.Tooltip("label:N", title=None), alt.Tooltip("delta:Q", title="USD", format="+,.2f")],
+    ).properties(height=40 + 34 * len(rows))
+    return bars
+
+
+def _drawdown_contribution_chart(d: dict):
+    """Horizontal bars: each asset's contribution to the max simulated drawdown (INVERSOR_IDEAS §6)."""
+    rows = [
+        {"asset": a["symbol"], "pp": round(a["contribution_pp"], 1), "share": round(a["share_pct"], 1)}
+        for a in d["per_asset"] if abs(a["contribution_pp"]) > 1e-9
+    ]
+    if not rows:
+        return None
+    order = [r["asset"] for r in rows]  # already sorted biggest-sinker first
+    return alt.Chart(alt.Data(values=rows)).mark_bar(color="#ef4444").encode(
+        x=alt.X("pp:Q", title="Contribución a la caída (pp)"),
+        y=alt.Y("asset:N", title=None, sort=order),
+        tooltip=[alt.Tooltip("asset:N", title="Activo"),
+                 alt.Tooltip("pp:Q", title="pp de la caída"),
+                 alt.Tooltip("share:Q", title="% de la caída")],
+    ).properties(height=min(50 + 24 * len(rows), 460))
+
+
 def _section_today(conn, settings, holdings, built) -> None:
     """"Hoy" — the weekly landing (INVERSOR_IDEAS §3-4, §6): value, PnL (USD+COP), deployment
     progress, an attention tray, and per-asset drift. Local-only (reads the real account).
@@ -2950,7 +3046,9 @@ def main() -> None:
         def page_mercado_detalle() -> None:  # "el mercado en detalle" (INVERSOR_IDEAS §7.1)
             _section_portfolio(conn, settings)
             st.divider()
-            _value_accrual_view(conn, settings)
+            # Value accrual is quarterly analysis, not a weekly read → expander (§5).
+            with st.expander("Value accrual — actividad (TVL) vs. valoración (mcap)"):
+                _value_accrual_view(conn, settings)
             _btc_onchain_block(conn, settings)
 
         def page_fiscal() -> None:

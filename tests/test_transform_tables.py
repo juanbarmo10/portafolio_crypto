@@ -26,6 +26,7 @@ from transform.indicators import (
     macro_table,
     non_price_risk_table,
     portfolio_table,
+    result_waterfall,
     source_discrepancy_table,
     thesis_invalidation_table,
     thesis_tvl_table,
@@ -253,6 +254,8 @@ def test_non_price_risk_table_concentrations(conn, settings) -> None:
             ]
         ),
     )
+    # Isolate from any real limits in config: with no policy the semáforo stays 'sin_politica'.
+    settings.raw.setdefault("portfolio", {})["non_price_risk_limits"] = {}
     df = non_price_risk_table(conn, settings)
     by = {r["key"]: r for r in df.to_dict("records")}
     assert df.attrs["total_usd"] == pytest.approx(2100.0)
@@ -262,8 +265,12 @@ def test_non_price_risk_table_concentrations(conn, settings) -> None:
     assert by["lent"]["current_pct"] == pytest.approx(200 / 2100 * 100)   # USDC in Earn
     assert by["wrappers"]["current_pct"] == pytest.approx(100 / 2100 * 100)  # WBETH (LSD)
     assert by["self_custody"]["current_pct"] == pytest.approx(0.0)
-    # No limits set in config -> the semáforo stays 'sin_politica' (the point is writing a policy).
-    assert {r["status"] for r in df.to_dict("records")} == {"sin_politica"}
+    assert {r["status"] for r in df.to_dict("records")} == {"sin_politica"}  # no policy -> no light
+
+    # And with a limit set, the semáforo lights up (exchange 100% > 60% max -> rojo).
+    settings.raw["portfolio"]["non_price_risk_limits"] = {"exchange_max_pct": 60}
+    df2 = non_price_risk_table(conn, settings)
+    assert {r["key"]: r["status"] for r in df2.to_dict("records")}["exchange"] == "rojo"
 
 
 def test_holdings_table_weight_excluding_cash(conn, settings) -> None:
@@ -718,6 +725,28 @@ def test_capital_deployed_summary_net_and_idempotent(conn, settings) -> None:
     s2 = capital_deployed_summary(conn, settings)
     assert s2["net_deployed_usd"] == pytest.approx(5000.0)
     assert s2["is_manual"] is True
+
+
+def test_result_waterfall_reconciles(conn, settings) -> None:
+    # Deposit 1000; hold 0.02 BTC @ 65000 = 1300. The steps (aportado, realizado, no realizado,
+    # comisiones, ajuste) always sum to the live total by construction (the residual closes it).
+    upsert_capital_flows(conn, pd.DataFrame([
+        {"flow_id": "d1", "kind": "deposit", "asset": "USD", "amount": 1000.0,
+         "usd_value": 1000.0, "ts": "2026-01-01T00:00:00+00:00"},
+    ]))
+    upsert_observations(conn, pd.DataFrame([
+        _obs("bitcoin:price", "2026-07-24T00:00:00+00:00", 65000.0),
+        _obs("BTC:balance:spot", "2026-07-24T00:00:00+00:00", 0.02, source="binance"),
+    ]))
+    w = result_waterfall(conn, settings)
+    assert w["has_data"]
+    assert sum(s["delta"] for s in w["steps"]) == pytest.approx(w["total_value"])  # reconciles
+    assert w["total_value"] == pytest.approx(1300.0)
+    assert w["net_deployed"] == pytest.approx(1000.0)
+
+
+def test_result_waterfall_no_flows(conn, settings) -> None:
+    assert result_waterfall(conn, settings)["has_data"] is False
 
 
 def test_execution_summary_from_trades(conn, settings) -> None:

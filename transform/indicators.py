@@ -1275,6 +1275,46 @@ def capital_deployed_summary(conn: sqlite3.Connection, settings: Settings) -> di
     }
 
 
+def result_waterfall(
+    conn: sqlite3.Connection, settings: Settings, holdings: pd.DataFrame | None = None
+) -> dict[str, Any]:
+    """Decompose today's portfolio value into its sources (INVERSOR_IDEAS §6#6):
+
+        Aportado neto  +  PnL realizado  +  PnL no realizado  −  Comisiones  +  Ajuste  =  Valor hoy
+
+    The **ajuste** (residual) is computed to close to the live total by construction, so the bars
+    always reconcile; it absorbs what the other terms cannot attribute precisely — Earn/staking
+    rewards, positions acquired with no cost basis (Earn/Convert), and any gap in deposit capture.
+    A large residual means the deposit capture is incomplete (set ``binance_account.net_deployed_usd``
+    in the local override). ``has_data`` False without capital flows. Returns {has_data, steps
+    [{label, delta, kind}], total_value, net_deployed, residual}.
+    """
+    if holdings is None:
+        holdings = holdings_table(conn, settings)
+    cap = capital_deployed_summary(conn, settings)
+    if not cap.get("has_flows"):
+        return {"has_data": False}
+    total_value = float(holdings.attrs.get("total_value_usd", 0.0)) if not holdings.empty else 0.0
+    net_dep = float(cap["net_deployed_usd"])
+    realized = float(realized_pnl_fifo(conn, settings).attrs.get("total_realized_pnl_usd", 0.0))
+    wp = wallet_pnl_table(conn, settings, holdings)
+    unreal = float(wp.attrs.get("total_pnl_usd", 0.0)) if not wp.empty else 0.0
+    ex = execution_summary(conn, settings)
+    fees = float(ex.get("fees_usd", 0.0)) if ex.get("has_trades") else 0.0
+    residual = total_value - (net_dep + realized + unreal - fees)
+    steps = [
+        {"label": "Aportado neto", "delta": net_dep, "kind": "base"},
+        {"label": "PnL realizado", "delta": realized, "kind": "pnl"},
+        {"label": "PnL no realizado", "delta": unreal, "kind": "pnl"},
+        {"label": "Comisiones", "delta": -fees, "kind": "cost"},
+        {"label": "Recompensas + ajuste", "delta": residual, "kind": "residual"},
+    ]
+    return {
+        "has_data": True, "steps": steps, "total_value": total_value,
+        "net_deployed": net_dep, "residual": residual,
+    }
+
+
 def _price_asof_strict(conn: sqlite3.Connection, series_id: str, ts: str) -> float | None:
     """Latest CoinGecko price on/before ``ts``, or None if there is none before it.
 

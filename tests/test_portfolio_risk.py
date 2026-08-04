@@ -17,6 +17,7 @@ from db.loader import init_db, upsert_observations
 from transform.portfolio_risk import (
     _max_drawdown,
     correlation_matrix,
+    drawdown_contribution,
     portfolio_risk_summary,
 )
 
@@ -100,6 +101,22 @@ def test_max_drawdown_pure() -> None:
     idx = pd.date_range("2026-07-01", periods=3, freq="D", tz="UTC")
     assert _max_drawdown(pd.Series([100.0, 80.0, 120.0], index=idx)) == pytest.approx(-20.0)
     assert _max_drawdown(pd.Series([100.0], index=idx[:1])) is None  # too short
+
+
+def test_drawdown_contribution_attributes_the_fall(conn, settings) -> None:
+    # BTC path 100→110→99, ETH path (2x moves) 100→120→96: portfolio peaks day25, troughs day26.
+    # Each asset's $ drop over that window sums exactly to the portfolio drop.
+    holdings = _seed_correlated(conn)
+    d = drawdown_contribution(conn, settings, holdings)
+    assert d["has_data"]
+    assert d["peak"] == "2026-07-25" and d["trough"] == "2026-07-26"
+    by = {a["symbol"]: a for a in d["per_asset"]}
+    assert d["per_asset"][0]["symbol"] == "ETH"                 # bigger sinker first
+    assert by["ETH"]["share_pct"] == pytest.approx(67.35, abs=0.1)
+    assert by["BTC"]["share_pct"] == pytest.approx(32.65, abs=0.1)
+    # Contributions (pp of the peak) sum to the drawdown magnitude — reconciles by construction.
+    total_pp = sum(a["contribution_pp"] for a in d["per_asset"])
+    assert total_pp == pytest.approx(abs(d["max_dd_pct"]), abs=1e-6)
 
 
 def test_risk_summary_no_holdings(conn, settings) -> None:

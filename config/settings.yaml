@@ -415,11 +415,11 @@ portfolio:
   # escribir la política ANTES de que el riesgo se materialice (igual que las tesis). Todos
   # opcionales; descoméntalos y ajústalos a tu tolerancia. `*_max_pct` = techo; `*_min_pct` = piso.
   non_price_risk_limits:
-    # exchange_max_pct: 100          # % máx. en un solo exchange (custodia)
-    # stablecoin_issuer_max_pct: 30  # % máx. en el mayor emisor de stablecoin (Tether/Circle)
-    # lent_max_pct: 20               # % máx. prestado (Earn — no custodiado)
-    # wrappers_max_pct: 15           # % máx. en envoltorios de staking (LSD)
-    # self_custody_min_pct: 20       # % mín. en autocustodia (llaves propias)
+    exchange_max_pct: 60          # % máx. en un solo exchange (custodia)
+    stablecoin_issuer_max_pct: 60  # % máx. en el mayor emisor de stablecoin (Tether/Circle)
+    lent_max_pct: 15               # % máx. prestado (Earn — no custodiado)
+    wrappers_max_pct: 10           # % máx. en envoltorios de staking (LSD)
+    self_custody_min_pct: 20       # % mín. en autocustodia (llaves propias)
 
 # --- Alerts (CLAUDE.md section 8, phase 3) -----------------------------------
 # Declarative rules evaluated against the DB after ingest; only actionable, pre-written

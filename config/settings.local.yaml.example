@@ -59,7 +59,13 @@
 #   long_term_months: 24            # >=24 meses => ganancia ocasional; <24 => renta ordinaria
 #   occasional_gain_rate_pct: 15.0  # CONFIRMAR con contador
 #   costing_method: "PEPS"
-#   uvt_cop: {2024: null, 2025: null, 2026: null}   # null => "no calculable"
+#   uvt_cop: {2024: null, 2025: null, 2026: null}   # UVT por año (Resolución DIAN); null => "no calculable"
+#   # Renta ordinaria (<24m) = PROGRESIVA (Art. 241): la ganancia se apila sobre tu ingreso anual de
+#   # la cédula general y tributa al marginal correspondiente. Fija tu ingreso ESTIMADO de OTROS
+#   # conceptos (sin la ganancia cripto) para estimar el impuesto marginal. ESTIMADO — el contador
+#   # liquida (deducciones/rentas exentas/pérdidas quedan fuera). Sin este valor, el impuesto <24m
+#   # queda "no calculable". Override opcional de la tabla: `art241_brackets`.
+#   annual_ordinary_income_cop: 100000000   # p.ej. ~100M COP (≈ 1.909 UVT 2026 -> banda del 28%)
 #   trm:
 #     base_url: "https://www.datos.gov.co/resource/32sa-8pi3.json"
 #     history_since: "2024-01-01"

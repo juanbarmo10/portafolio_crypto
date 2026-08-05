@@ -313,6 +313,92 @@ def maturity_summary(
     return df.sort_values("cost_cop_open", ascending=False).reset_index(drop=True) if not df.empty else df
 
 
+# --- Renta ordinaria (<24m): tabla progresiva Art. 241 E.T. (cédula general) ------------------
+# Base en UVT: (desde, tarifa marginal, impuesto acumulado en UVT al inicio del rango). Es LEY
+# (Art. 241 tras Ley 2277/2022), no un umbral ajustable; se deja override en `fiscal.art241_brackets`
+# por si la ley cambia. La renta ordinaria de cripto <24m se suma a esta cédula.
+_ART241_BRACKETS = [
+    (0.0, 0.00, 0.0),
+    (1090.0, 0.19, 0.0),
+    (1700.0, 0.28, 116.0),
+    (4100.0, 0.33, 788.0),
+    (8670.0, 0.35, 2296.0),
+    (18970.0, 0.37, 5901.0),
+    (31000.0, 0.39, 10352.0),
+]
+# UVT 2025 (Resolución DIAN 000193/2024 = $49.799). ACTUALIZAR al valor oficial del año fiscal
+# (2026: pendiente de la Resolución DIAN — verificar con el contador). Override: `fiscal.uvt_cop`.
+_DEFAULT_UVT_COP = 49799.0
+
+
+def _resolve_uvt(uvt_cfg: Any) -> float:
+    """Resolve ``fiscal.uvt_cop`` to the current tax year's UVT (COP). Accepts a scalar, a
+    ``{year: value}`` map (uses this year, else the latest), or None (→ 2025 default)."""
+    if isinstance(uvt_cfg, dict) and uvt_cfg:
+        year = datetime.now(timezone.utc).year
+        return float(uvt_cfg.get(year) or uvt_cfg.get(str(year)) or uvt_cfg[max(uvt_cfg)])
+    return float(uvt_cfg) if uvt_cfg else _DEFAULT_UVT_COP
+
+
+def art241_tax_cop(base_cop: float, uvt_cop: float, brackets: list | None = None) -> float:
+    """Impuesto de renta progresivo (Art. 241 E.T., cédula general) en COP para una base en COP.
+
+    La base se pasa a UVT, se ubica el rango y ``impuesto = (base_uvt − desde)·tarifa + acumulado``,
+    y se devuelve a COP. Cero bajo el piso de 1.090 UVT. **ESTIMADO** — el contador liquida.
+    """
+    if base_cop <= 0 or uvt_cop <= 0:
+        return 0.0
+    table = brackets or _ART241_BRACKETS
+    base_uvt = base_cop / uvt_cop
+    lo, rate, acc = table[0]
+    for frm, r, a in table:
+        if base_uvt >= frm:
+            lo, rate, acc = frm, r, a
+        else:
+            break
+    return ((base_uvt - lo) * rate + acc) * uvt_cop
+
+
+def estimate_ordinary_tax(settings: Settings, gain_cop: float) -> dict[str, Any]:
+    """Impuesto de renta ordinaria sobre una ganancia <24m, por su **impacto marginal** en la
+    cédula general (RESEARCH.md §17): ``impuesto = Art241(ingreso + ganancia) − Art241(ingreso)``.
+
+    La ganancia <24m **se apila** sobre tus demás ingresos anuales, así que su tarifa depende de ese
+    total — no es un % plano. Lee ``fiscal.annual_ordinary_income_cop`` (tus otros ingresos de la
+    cédula general) y ``fiscal.uvt_cop`` (UVT del año; por defecto la de 2025). ``has_config`` False
+    si no fijaste el ingreso. Devuelve {has_config, income_cop, uvt_cop, income_uvt, gain_cop, tax_cop,
+    marginal_rate_pct, effective_rate_pct}. **ESTIMADO**.
+    """
+    fiscal = settings.raw.get("fiscal", {})
+    income = fiscal.get("annual_ordinary_income_cop")
+    uvt = _resolve_uvt(fiscal.get("uvt_cop"))
+    override = fiscal.get("art241_brackets")
+    table = (
+        [(float(b["from_uvt"]), float(b["rate"]), float(b["plus_uvt"])) for b in override]
+        if override else None
+    )
+    if income is None:
+        return {"has_config": False, "uvt_cop": uvt, "gain_cop": gain_cop}
+    income = float(income)
+    g = max(float(gain_cop), 0.0)
+    tax = art241_tax_cop(income + g, uvt, table) - art241_tax_cop(income, uvt, table)
+    base_uvt = (income + g) / uvt
+    marginal = 0.0
+    for frm, r, _a in (table or _ART241_BRACKETS):
+        if base_uvt >= frm:
+            marginal = r
+    return {
+        "has_config": True,
+        "income_cop": income,
+        "uvt_cop": uvt,
+        "income_uvt": income / uvt,
+        "gain_cop": g,
+        "tax_cop": max(tax, 0.0),
+        "marginal_rate_pct": marginal * 100.0,
+        "effective_rate_pct": (max(tax, 0.0) / g * 100.0) if g > 0 else 0.0,
+    }
+
+
 def simulate_peps_sale(
     conn: sqlite3.Connection, settings: Settings, asset: str, units: float,
     price_usd: float | None = None, built: dict | None = None,
@@ -382,7 +468,14 @@ def simulate_peps_sale(
         remaining -= take
 
     tax_occ_cop = max(0.0, occ_cop) * occ_rate
-    tax_ord_cop = (max(0.0, ord_cop) * ord_rate) if ord_rate > 0 else None
+    # Ordinary tax: PROGRESSIVE (Art. 241, marginal impact) when income+UVT are configured; else
+    # the flat `ordinary_marginal_rate_pct` fallback (None if unset). RESEARCH.md §17.
+    ord_est = estimate_ordinary_tax(settings, ord_cop)
+    if ord_est["has_config"]:
+        tax_ord_cop = ord_est["tax_cop"]
+        ord_rate = ord_est["marginal_rate_pct"] / 100.0
+    else:
+        tax_ord_cop = (max(0.0, ord_cop) * ord_rate) if ord_rate > 0 else None
     return {
         "has_data": True,
         "asset": asset,
@@ -405,6 +498,7 @@ def simulate_peps_sale(
         "occ_rate_pct": occ_rate * 100.0,
         "ord_rate_pct": ord_rate * 100.0,
         "ord_is_estimate": ord_is_estimate,
+        "ordinary_progressive": ord_est["has_config"],
         "tax_occasional_cop": tax_occ_cop,
         "tax_ordinary_cop": tax_ord_cop,
         "tax_total_cop": tax_occ_cop + (tax_ord_cop or 0.0),

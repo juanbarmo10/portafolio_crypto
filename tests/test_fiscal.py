@@ -21,9 +21,11 @@ from core.config import load_settings
 from db.loader import init_db, upsert_observations, upsert_trades
 from alerts.rules import _lot_maturity_soon
 from transform.fiscal import (
+    art241_tax_cop,
     build_tax_lots,
     cop_usd_pnl_table,
     disposal_summary,
+    estimate_ordinary_tax,
     exit_ladder_table,
     form160_check,
     maturity_summary,
@@ -379,3 +381,40 @@ def test_short_term_disposals_ignores_matured(conn, settings) -> None:
     out = short_term_disposals(conn, settings)
     assert out["count"] == 0
     assert out["last"] is None
+
+
+# --- Renta ordinaria progresiva (Art. 241) — estimador del impuesto <24m ---------------------
+
+
+def test_art241_tax_cop_brackets() -> None:
+    # UVT = 100 for round numbers. Below the 1090-UVT floor -> 0.
+    assert art241_tax_cop(500 * 100, 100) == pytest.approx(0.0)
+    assert art241_tax_cop(1090 * 100, 100) == pytest.approx(0.0)   # at the floor
+    # 2000 UVT: band [1700,4100) 28%, accumulated 116 UVT -> (2000-1700)*.28 + 116 = 200 UVT.
+    assert art241_tax_cop(2000 * 100, 100) == pytest.approx(200 * 100)
+    # 5000 UVT: band [4100,8670) 33%, accumulated 788 -> (5000-4100)*.33 + 788 = 1085 UVT.
+    assert art241_tax_cop(5000 * 100, 100) == pytest.approx(1085 * 100)
+    assert art241_tax_cop(0, 100) == 0.0 and art241_tax_cop(1000, 0) == 0.0
+
+
+def test_estimate_ordinary_tax_marginal_impact(settings) -> None:
+    # Income 100M at UVT 50k -> 2000 UVT -> 28% band. A gain within the band taxes at 28% marginal.
+    settings.raw["fiscal"]["uvt_cop"] = 50000
+    settings.raw["fiscal"]["annual_ordinary_income_cop"] = 100_000_000
+    e = estimate_ordinary_tax(settings, 1_000_000)
+    assert e["has_config"]
+    assert e["income_uvt"] == pytest.approx(2000.0)
+    assert e["marginal_rate_pct"] == pytest.approx(28.0)
+    assert e["tax_cop"] == pytest.approx(280_000.0)          # 28% of 1M (same band)
+    # Negative/zero gain -> no tax.
+    assert estimate_ordinary_tax(settings, -5000)["tax_cop"] == pytest.approx(0.0)
+
+
+def test_estimate_ordinary_tax_uvt_year_map_and_unconfigured(settings) -> None:
+    # uvt_cop as a {year: value} map resolves to the current year (2026).
+    settings.raw["fiscal"]["uvt_cop"] = {2025: 49799, 2026: 52374}
+    settings.raw["fiscal"]["annual_ordinary_income_cop"] = 100_000_000
+    assert estimate_ordinary_tax(settings, 0)["uvt_cop"] == pytest.approx(52374.0)
+    # Without an income, the progressive estimate can't be made.
+    del settings.raw["fiscal"]["annual_ordinary_income_cop"]
+    assert estimate_ordinary_tax(settings, 65_288)["has_config"] is False

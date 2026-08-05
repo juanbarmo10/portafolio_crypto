@@ -77,6 +77,7 @@ from transform.fiscal import (  # noqa: E402
     build_tax_lots,
     cop_usd_pnl_table,
     disposal_summary,
+    estimate_ordinary_tax,
     exit_ladder_table,
     form160_check,
     maturity_summary,
@@ -2212,6 +2213,36 @@ def _section_fiscal(conn, settings, built=None) -> None:
                 "15% de ganancia ocasional (INVERSOR_IDEAS §6#7). ESTIMADO."
             )
 
+    # Renta ordinaria (<24 m) realizada este año → impuesto marginal estimado (Art. 241).
+    stw = short_term_disposals(conn, settings, built=built)
+    ord_est = estimate_ordinary_tax(settings, stw["gain_cop"])
+    if stw["count"] > 0 or ord_est.get("has_config"):
+        st.markdown("**Renta ordinaria (<24 m) realizada este año — impuesto estimado**")
+        if stw["count"] == 0:
+            st.caption("Sin ventas <24 m este año → base gravable 0.")
+        elif not ord_est["has_config"]:
+            st.caption(
+                f"Base gravable: **{_fmt_cop(stw['gain_cop'])}** ({stw['count']} venta(s) <24 m). "
+                "Impuesto **no calculable** aún — fija `fiscal.annual_ordinary_income_cop` y "
+                "`fiscal.uvt_cop` en `settings.local.yaml` para estimar el marginal (Art. 241)."
+            )
+        else:
+            o1, o2, o3 = st.columns(3)
+            o1.metric("Base gravable <24 m", _fmt_cop(stw["gain_cop"]),
+                      help=f"{stw['count']} venta(s) <24 m este año (renta ordinaria).")
+            o2.metric("Tarifa marginal", f"{ord_est['marginal_rate_pct']:.0f}%",
+                      help=f"Tu ingreso ({_fmt_cop(ord_est['income_cop'])} ≈ "
+                      f"{ord_est['income_uvt']:,.0f} UVT) cae en este rango del Art. 241. "
+                      f"UVT = {_fmt_cop(ord_est['uvt_cop'])}.")
+            o3.metric("Impuesto estimado", _fmt_cop(ord_est["tax_cop"]),
+                      help="Impacto marginal = Art241(ingreso+ganancia) − Art241(ingreso). ESTIMADO.")
+            st.caption(
+                f"La ganancia <24 m **se apila** sobre tus ingresos: {_fmt_cop(stw['gain_cop'])} al "
+                f"{ord_est['marginal_rate_pct']:.0f}% marginal ≈ **{_fmt_cop(ord_est['tax_cop'])}** "
+                "(Art. 241, progresivo). **ESTIMADO** — el contador liquida: deducciones, rentas "
+                "exentas y compensación de pérdidas quedan fuera de esta aritmética."
+            )
+
     # Pre-sale PEPS simulator — the most valuable piece: see the tax consequence BEFORE selling.
     if lots:
         st.markdown("**Simulador de venta (PEPS)** — antes de vender")
@@ -2248,9 +2279,10 @@ def _section_fiscal(conn, settings, built=None) -> None:
                     "impuesto **no calculable** (fija tu marginal con el contador)"
                 )
             else:
+                mode = "marginal (Art. 241)" if sim.get("ordinary_progressive") else "plano"
                 reg2.markdown(
                     f"**Renta ordinaria** (<24 m): {sim['ordinary_gain_cop']:+,.0f} COP → "
-                    f"{sim['ord_rate_pct']:.0f}% = {_fmt_cop(sim['tax_ordinary_cop'])}"
+                    f"{sim['ord_rate_pct']:.0f}% {mode} = {_fmt_cop(sim['tax_ordinary_cop'])}"
                 )
             if sim["shortfall"] > 1e-9:
                 st.caption(

@@ -428,6 +428,23 @@ loginctl enable-linger "$USER"          # ejecutar aunque no haya sesión inicia
 
 *Alternativa cron* (sin catch-up): `0 13 * * * /ruta/al/repo/run_daily.sh`.
 
+**Dashboard local siempre encendido (systemd user service).** Mantiene la app levantada en
+`http://localhost:8501` mientras el PC esté encendido: arranca en el boot (con `enable-linger`, sin
+necesidad de iniciar sesión) y se reinicia si se cae (`Restart=always`). Complementa al timer: el
+timer **refresca los datos**, el service **mantiene la UI**.
+
+```bash
+cp deploy/cryptodash-dashboard.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cryptodash-dashboard.service
+loginctl enable-linger "$USER"          # arrancar en el boot aunque no haya sesión
+# tras cambiar código/config: systemctl --user restart cryptodash-dashboard  (NO uses pkill+nohup)
+# logs: journalctl --user -u cryptodash-dashboard -f   ·   apagar: systemctl --user disable --now cryptodash-dashboard
+```
+
+Enlaza a **127.0.0.1** (solo local) porque la app muestra la cuenta real (nivel 4). Para acceder
+desde el móvil en tu LAN, cambia `--server.address` a `0.0.0.0` en el `.service` (asumiendo el riesgo
+de exponer nivel 4 en la red).
+
 **Desplegar el dashboard (Neon + Streamlit Cloud):**
 1. Crea un proyecto en [neon.tech], copia la cadena `postgresql://...` → tu `DATABASE_URL`.
 2. Puebla Neon con datos públicos desde tu máquina:

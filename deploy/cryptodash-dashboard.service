@@ -1,0 +1,16 @@
+[Unit]
+Description=cryptodash Streamlit dashboard (local, nivel 4 - cuenta real)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/juanb/Research_Lab/projects/portafolio_crypto
+# Bind to localhost only: la app muestra la cuenta real (holdings, fiscal). Para acceder desde el
+# movil en tu LAN, cambia --server.address a 0.0.0.0 (asumiendo el riesgo de exponer nivel 4).
+ExecStart=/home/juanb/Research_Lab/projects/portafolio_crypto/.venv/bin/python -m streamlit run app/dashboard.py --server.port 8501 --server.address 127.0.0.1 --server.headless true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
